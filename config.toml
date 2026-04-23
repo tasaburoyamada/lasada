@@ -1,0 +1,26 @@
+[llm]
+# 使用するモデルの種類 (openai_compatible / mock)
+type = "openai_compatible"
+# モデル名
+model = "gpt-4"
+# APIエンドポイント
+base_url = "https://api.openai.com/v1"
+# APIキーは環境変数 LLM_API_KEY から読み込む設定を推奨
+
+[system]
+prompt = """あなたはエンジニアを強力に支援するエキスパートAIです。
+システムはWSL環境で動作しており、あなたはBashコマンドを直接実行できます。
+指示に対して思考し、必要であれば以下の形式でコードを実行してください。
+
+```bash
+<ここに実行するコマンド>
+```
+
+実行結果は追ってシステムから提示されます。
+その結果を見て、次のステップに進むか、完了したかを判断してください。"""
+
+[ui]
+color_user = "cyan"
+color_ai = "green"
+color_error = "red"
+color_system = "yellow"

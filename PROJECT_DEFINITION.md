@@ -1,29 +1,31 @@
-# Project: my-interpreter
+# Project: Lasada (Rust / Plugin Architecture)
 
 Open-Interpreter を参考に、よりシンプルで使いやすいインタープリターを再構築するプロジェクト。
 
 ## 1. 目的
-- Open-Interpreter の複雑な依存関係や設定を排し、必要最小限の機能を持つ軽量なインタープリターを構築する。
-- 実行環境の安全性と制御性を高める。
+- Python および既存ツールの複雑な依存関係や設定を完全に排除し、Rustによる堅牢なアーキテクチャを採用する。
+- 実行エンジンやLLMバックエンドをプラグイン化（トレイトベース）し、高い拡張性と安全性を持たせる。
 
 ## 2. 作業工程 (Phase)
-### Phase 1: 基礎調査 & 構造設計
-- [ ] `references/open-interpreter` のコアロジック（コード実行、LLM連携、ストリーミング）の抽出
-- [ ] `my-interpreter` の全体アーキテクチャの定義
+### Phase 1: 基礎アーキテクチャ設計
+- [x] `Lasada` のコア・トレイト（`ExecutionEngine`, `LlmBackend`等）の定義
+- [x] プロジェクト構造の決定とベースディレクトリの作成
 
-### Phase 2: MVP (Minimum Viable Product) 実装
-- [ ] LLM インターフェースの実装
-- [ ] コード実行エンジン（Python等）の実装
-- [ ] 基本的な CLI / インタラクティブ・ループの実装
+### Phase 2: MVP プラグインの実装
+- [x] Mock LLM プラグインの実装（自社LLMへの差し替えを前提としたインターフェース）
+- [x] 状態保持型 Bash 実行エンジンの実装（Rustによる `std::process` の非同期ラップ）
+- [x] 実行エンジンとLLMを統合する「オーケストレータ」の実装
+- [x] 基本的な CLI / インタラクティブ・ループの実装
 
-### Phase 3: 機能拡張 & 洗練
-- [ ] エラーハンドリングと自動修正機能
-- [ ] ファイルシステム操作の安全性強化
-- [ ] 出力フォーマットの最適化
+### Phase 3: 機能拡張 & 堅牢化
+- [ ] サンドボックス化（Wasm/Docker等の連携による実行環境分離）の検討
+- [ ] エラーハンドリングと自動修正機能の強化
+- [ ] 非同期処理(`tokio`)によるセッション管理の最適化
 
-## 3. 技術スタック案
-- 言語: Python (or Rust if performance is critical)
-- LLM API: OpenAI / Anthropic / Gemini (Google)
+## 3. 技術スタック
+- 言語: Rust
+- アーキテクチャ: トレイトベースのプラグイン指向
+- 実行環境: OSネイティブまたは独自ランタイム（Python非依存）
 
 ## 4. 進捗管理
 - 完了したタスクは [x] でマークする。
