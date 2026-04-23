@@ -1,22 +1,28 @@
-# My-Interpreter 使用ガイド
+# Lasada 使用ガイド
 
-このドキュメントでは、`my-interpreter` の導入、設定、および拡張方法について説明します。
+このドキュメントでは、`lasada` の導入、設定、および拡張方法について説明します。
 
 ## 1. クイックスタート
 
-### ビルド
-まずはプロジェクトをコンパイルします。
+### インストール
+リポジトリのルートで以下のコマンドを実行してください。ビルドとバイナリの配置、設定ファイルの生成を自動で行います。
 ```bash
-cargo build --release
+./install.sh
 ```
+※内部で `cargo build --release` を実行するため、Rust の開発環境が必要です。
 
 ### 実行
+インストール後、パスが通っていれば以下のコマンドで起動できます。
 ```bash
-./target/release/my_interpreter
+lasada
 ```
-※デフォルトでは `MockLlm` が起動します。実際の LLM と連携するには下記の設定を行ってください。
+※デフォルトでは `MockLlm` が起動します。
 
 ## 2. 設定ガイド
+
+### 設定ファイルの場所
+インストーラーを実行すると、以下のパスに設定ファイルが作成されます。
+`~/.config/lasada/config.toml`
 
 ### LLM の切り替え
 `config.toml` を編集して、使用する LLM バックエンドを選択します。
@@ -30,43 +36,29 @@ base_url = "https://your-api-endpoint/v1"
 ```
 
 ### API キーの設定
-`.env` ファイルを作成し、API キーを記述します。
+APIキーは環境変数 `LLM_API_KEY` を通じて読み込まれます。
+
+**推奨される設定方法:**
+シェル（.bashrc や .zshrc など）で一時的、または永続的に環境変数を設定してください。
 ```bash
-LLM_API_KEY=sk-xxxx...
+export LLM_API_KEY="your_secret_key"
 ```
+
+> [!CAUTION]
+> **セキュリティ警告: .env ファイルの使用について**
+> プロジェクト内に `.env` ファイルを作成して設定することも可能ですが、**非推奨**です。`.env` ファイルを誤ってバージョン管理システム（Gitなど）にコミットしてしまうと、**APIキーが外部に流出し、不正利用されるリスク**があります。可能な限り、環境変数として直接設定するか、秘匿情報管理ツールを使用してください。
 
 ## 3. 基本的な操作
 起動すると `User >` プロンプトが表示されます。
 
-- **自然言語での指示**: 「カレントディレクトリのファイルサイズを合計して」のように入力します。
+- **自然言語での指示**: 「カレントディレクトリのファイル一覧を見せて」のように入力します。
 - **自動実行**: AI が `bash` コマンドを生成すると、自動的に実行され、その結果が AI にフィードバックされます。
 - **終了**: `exit` または `quit` と入力します。
 
 ## 4. 開発者向け：機能の拡張
+`lasada` はプラグイン・アーキテクチャを採用しており、`src/core/traits.rs` で定義された `LlmBackend` や `ExecutionEngine` を実装することで、自由に機能を拡張できます。
+詳細は `README.md` を参照してください。
 
-### 新しい LLM バックエンドの追加
-`src/core/traits.rs` の `LlmBackend` トレイトを実装した新しい構造体を `src/plugins/` に作成してください。
-
-```rust
-#[async_trait]
-impl LlmBackend for MyNewLlm {
-    fn name(&self) -> &'static str { "MyNewLlm" }
-    async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream, String> {
-        // 実装...
-    }
-}
-```
-
-### 新しい実行エンジンの追加
-`src/core/traits.rs` の `ExecutionEngine` トレイトを実装することで、Bash 以外の環境（Pythonインタープリタの直接呼び出し、Docker コンテナ、Wasm 実行環境など）をサポートできます。
-
-```rust
-#[async_trait]
-impl ExecutionEngine for MyCustomEngine {
-    // 実装...
-}
-```
-
-## 5. 設計思想の核
-このツールは **「AI に人間（あなた）の判断基準を学習させる」** ことを最終目標としています。
-日々の対話を通じて、AI があなたの好むコードスタイルや安全基準を学習し、最終的には最小限の確認だけで高度なタスクを完遂する「デジタルツイン」としての動作を目指しています。
+## 5. 設計思想
+このツールは **「AI に人間（あなた）の判断基準を学習させる」** ことを目的としています。
+`HV-CAD-Framework/specs/lasada_development.vlog` に基づき、高密度な対話と、人間による評価（正則化）を中心とした開発プロセスを志向しています。
