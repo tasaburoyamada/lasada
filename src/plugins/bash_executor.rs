@@ -22,12 +22,20 @@ impl ExecutionEngine for BashExecutor {
     }
 
     async fn start_session(&mut self) -> Result<()> {
-        let child = Command::new("bash")
+        let mut child = Command::new("bash")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| AppError::ExecutionError(format!("Failed to spawn bash: {}", e)))?;
+
+        // Redirect stderr to stdout for this session to simplify output capturing
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(b"exec 2>&1\n").await
+                .map_err(|e| AppError::ExecutionError(format!("Failed to setup stderr redirection: {}", e)))?;
+            stdin.flush().await
+                .map_err(|e| AppError::ExecutionError(format!("Failed to flush stdin: {}", e)))?;
+        }
 
         self.child = Some(child);
         Ok(())
@@ -38,8 +46,14 @@ impl ExecutionEngine for BashExecutor {
         let stdin = child.stdin.as_mut().ok_or(AppError::ExecutionError("Failed to open stdin".into()))?;
         
         let id = std::process::id();
-        let delimiter = format!("__END_OF_COMMAND_{}__", id);
-        let full_command = format!("{{ {}; }} 2>&1; echo \"{}:$?\"\n", code.trim(), delimiter);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros();
+        let delimiter = format!("__LASADA_END_{}_{}__", id, timestamp);
+        
+        // Removed { } wrapper to prevent injection issues and used newlines for safety
+        let full_command = format!("{}\necho \"{}:$?\"\n", code.trim(), delimiter);
 
         stdin.write_all(full_command.as_bytes()).await
             .map_err(|e| AppError::ExecutionError(format!("Failed to write to stdin: {}", e)))?;
@@ -59,10 +73,11 @@ impl ExecutionEngine for BashExecutor {
                 line = stdout_reader.next_line() => {
                     match line {
                         Ok(Some(l)) => {
-                            if l.contains(&delimiter) {
-                                let parts: Vec<&str> = l.split(':').collect();
-                                let status = parts.get(1).unwrap_or(&"0");
-                                if *status != "0" {
+                            if l.starts_with(&delimiter) {
+                                let status = l.strip_prefix(&delimiter)
+                                    .and_then(|s| s.strip_prefix(':'))
+                                    .unwrap_or("0");
+                                if status != "0" {
                                     result.push_str(&format!("\n[Exit Code: {}]", status));
                                 }
                                 break;

@@ -110,7 +110,9 @@ impl Interpreter {
 
     fn extract_bash_code(&self, text: &str) -> Vec<String> {
         let mut codes = Vec::new();
-        let re = regex::Regex::new(r"```bash\n([\s\S]*?)```").unwrap();
+        // Robust regex: case-insensitive "bash", optional whitespace after it, 
+        // and handles different line endings.
+        let re = regex::Regex::new(r"(?i)```bash\s*[\r\n]+([\s\S]*?)```").unwrap();
         for cap in re.captures_iter(text) {
             codes.push(cap[1].trim().to_string());
         }
