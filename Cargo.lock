@@ -912,6 +912,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "lasada"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "colored",
+ "config",
+ "dotenv",
+ "fern",
+ "futures-util",
+ "indicatif",
+ "log",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "toml",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.185"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -965,28 +988,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "my_interpreter"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "colored",
- "config",
- "dotenv",
- "fern",
- "futures-util",
- "indicatif",
- "log",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "toml",
 ]
 
 [[package]]

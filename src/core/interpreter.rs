@@ -1,11 +1,11 @@
-use crate::core::traits::{ExecutionEngine, LlmBackend, Message};
+use crate::core::traits::{ExecutionEngine, LlmBackend, Message, Result};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use futures_util::StreamExt;
 use std::io::{self, Write};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, error};
+use log::info;
 
 pub struct Interpreter {
     llm: Box<dyn LlmBackend>,
@@ -27,7 +27,7 @@ impl Interpreter {
         }
     }
 
-    pub async fn init(&mut self) -> Result<(), String> {
+    pub async fn init(&mut self) -> Result<()> {
         let mut executor = self.executor.lock().await;
         executor.start_session().await?;
         
@@ -39,7 +39,7 @@ impl Interpreter {
         Ok(())
     }
 
-    pub async fn chat(&mut self, user_input: &str) -> Result<(), String> {
+    pub async fn chat(&mut self, user_input: &str) -> Result<()> {
         self.history.push(Message {
             role: "user".to_string(),
             content: user_input.to_string(),

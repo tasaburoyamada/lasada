@@ -1,4 +1,4 @@
-use crate::core::traits::{LlmBackend, Message, LlmStream};
+use crate::core::traits::{LlmBackend, Message, LlmStream, Result};
 use async_trait::async_trait;
 use futures_util::stream;
 
@@ -10,8 +10,8 @@ impl LlmBackend for MockLlm {
         "MockLlm"
     }
 
-    async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream, String> {
-        let last_message = history.last().ok_or("No history")?;
+    async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream> {
+        let last_message = history.last().ok_or(crate::core::traits::AppError::LlmError("No history".into()))?;
         let response = if last_message.content.contains("ls") {
             "I will check the directory for you.\n\n```bash\nls -F\n```"
         } else if last_message.content.contains("date") {
@@ -20,7 +20,6 @@ impl LlmBackend for MockLlm {
             "How can I help you today?"
         };
 
-        // 1文字ずつ出すような擬似ストリーム
         let s = stream::iter(response.chars().map(|c| Ok(c.to_string())));
         Ok(Box::pin(s))
     }

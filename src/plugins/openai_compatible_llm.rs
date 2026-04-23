@@ -1,4 +1,4 @@
-use crate::core::traits::{LlmBackend, Message, LlmStream};
+use crate::core::traits::{LlmBackend, Message, LlmStream, Result, AppError};
 use async_trait::async_trait;
 use serde_json::json;
 use futures_util::{StreamExt};
@@ -37,7 +37,7 @@ impl LlmBackend for OpenAICompatibleLlm {
         "OpenAICompatibleLlm"
     }
 
-    async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream, String> {
+    async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream> {
         let client = reqwest::Client::new();
         
         let body = json!({
@@ -51,7 +51,7 @@ impl LlmBackend for OpenAICompatibleLlm {
             .json(&body)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::LlmError(e.to_string()))?;
 
         let stream = res.bytes_stream().map(|item| {
             match item {
@@ -73,7 +73,7 @@ impl LlmBackend for OpenAICompatibleLlm {
                     }
                     Ok(content_acc)
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(AppError::LlmError(e.to_string())),
             }
         });
 

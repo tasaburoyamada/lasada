@@ -68,4 +68,4 @@ cargo run
 - `現在の時刻を表示して`
 
 ## ライセンス
-MIT License
+Apache License 2.0

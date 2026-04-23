@@ -5,7 +5,7 @@ use crate::core::interpreter::Interpreter;
 use crate::plugins::mock_llm::MockLlm;
 use crate::plugins::bash_executor::BashExecutor;
 use crate::plugins::openai_compatible_llm::OpenAICompatibleLlm;
-use crate::core::traits::LlmBackend;
+use crate::core::traits::{LlmBackend, AppError};
 use std::io::{self, Write};
 use dotenv::dotenv;
 use config::Config;
@@ -13,7 +13,6 @@ use colored::*;
 use log::{info, error};
 
 fn setup_logger() -> Result<(), fern::InitError> {
-    // 現在時刻を取得してファイル名を生成 (YYYYMMDDHHMM.log)
     let now = chrono::Local::now();
     let log_filename = format!("logs/{}.log", now.format("%Y%m%d%H%M"));
 
@@ -34,23 +33,20 @@ fn setup_logger() -> Result<(), fern::InitError> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), String> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     
     if let Err(e) = setup_logger() {
         eprintln!("Failed to initialize logger: {}", e);
     }
 
-    // 設定ファイルの読み込み
-    let home_config = format!("{}/.config/lasada/config", std::env::var("HOME").unwrap_or_default());
     let settings = Config::builder()
         .add_source(config::File::with_name("config").required(false))
-        .add_source(config::File::with_name(&home_config).required(false))
         .build()
         .map_err(|e| format!("Could not load config: {}", e))?;
 
-    let llm_config = settings.get_table("llm").map_err(|e| e.to_string())?;
-    let system_config = settings.get_table("system").map_err(|e| e.to_string())?;
+    let llm_config = settings.get_table("llm").unwrap_or_default();
+    let system_config = settings.get_table("system").unwrap_or_default();
     
     let system_prompt = system_config.get("prompt")
         .map(|v| v.to_string())
@@ -77,17 +73,17 @@ async fn main() -> Result<(), String> {
     
     if let Err(e) = interpreter.init().await {
         error!("{} {}", "Initialization Error:".red().bold(), e);
-        return Err(e);
+        return Err(e.into());
     }
 
     info!("{}", "Ready for input. Type 'exit' to quit.".bright_black());
 
     loop {
         print!("{} ", "User >".blue().bold());
-        io::stdout().flush().map_err(|e| e.to_string())?;
+        io::stdout().flush()?;
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        io::stdin().read_line(&mut input)?;
         
         let input = input.trim();
         if input.is_empty() {
