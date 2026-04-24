@@ -33,10 +33,6 @@ impl OpenAICompatibleLlm {
 
 #[async_trait]
 impl LlmBackend for OpenAICompatibleLlm {
-    fn name(&self) -> &'static str {
-        "OpenAICompatibleLlm"
-    }
-
     async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream> {
         let client = reqwest::Client::new();
         
@@ -63,7 +59,7 @@ impl LlmBackend for OpenAICompatibleLlm {
             "stream": true
         });
 
-        let res = client.post(format!("{}/chat/completions", self.base_url))
+        let res = client.post(&self.base_url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&body)
             .send()

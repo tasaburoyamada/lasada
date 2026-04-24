@@ -18,10 +18,6 @@ impl BashExecutor {
 
 #[async_trait]
 impl ExecutionEngine for BashExecutor {
-    fn name(&self) -> &'static str {
-        "BashExecutor"
-    }
-
     async fn start_session(&mut self) -> Result<()> {
         let mut child = Command::new("bash")
             .stdin(Stdio::piped())
@@ -109,12 +105,5 @@ impl ExecutionEngine for BashExecutor {
         }
 
         Ok(result.trim().to_string())
-    }
-
-    async fn terminate(&mut self) -> Result<()> {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill().await;
-        }
-        Ok(())
     }
 }

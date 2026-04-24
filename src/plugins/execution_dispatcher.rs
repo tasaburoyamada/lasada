@@ -32,10 +32,6 @@ impl ExecutionDispatcher {
 
 #[async_trait]
 impl ExecutionEngine for ExecutionDispatcher {
-    fn name(&self) -> &'static str {
-        "ExecutionDispatcher"
-    }
-
     async fn start_session(&mut self) -> Result<()> {
         for executor in self.executors.values_mut() {
             executor.start_session().await?;
@@ -60,12 +56,5 @@ impl ExecutionEngine for ExecutionDispatcher {
                 Err(crate::core::traits::AppError::ExecutionError(format!("No executor for language: {}", lang)))
             }
         }
-    }
-
-    async fn terminate(&mut self) -> Result<()> {
-        for executor in self.executors.values_mut() {
-            executor.terminate().await?;
-        }
-        Ok(())
     }
 }

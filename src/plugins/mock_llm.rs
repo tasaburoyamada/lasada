@@ -6,11 +6,8 @@ pub struct MockLlm;
 
 #[async_trait]
 impl LlmBackend for MockLlm {
-    fn name(&self) -> &'static str {
-        "MockLlm"
-    }
-
     async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream> {
+
         let last_message = history.last().ok_or(crate::core::traits::AppError::LlmError("No history".into()))?;
         let response = if last_message.content.contains("ls") {
             "I will check the directory for you.\n\n```bash\nls -F\n```"

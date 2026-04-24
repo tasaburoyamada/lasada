@@ -96,10 +96,6 @@ impl WebExecutor {
 
 #[async_trait]
 impl ExecutionEngine for WebExecutor {
-    fn name(&self) -> &'static str {
-        "WebExecutor"
-    }
-
     async fn start_session(&mut self) -> Result<()> {
         Ok(())
     }
@@ -115,9 +111,5 @@ impl ExecutionEngine for WebExecutor {
         } else {
             Err(AppError::ExecutionError("Unknown web command. Use 'search <query>' or 'browse <url>'.".into()))
         }
-    }
-
-    async fn terminate(&mut self) -> Result<()> {
-        Ok(())
     }
 }

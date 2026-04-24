@@ -73,10 +73,6 @@ impl ComputerExecutor {
 
 #[async_trait]
 impl ExecutionEngine for ComputerExecutor {
-    fn name(&self) -> &'static str {
-        "ComputerExecutor"
-    }
-
     async fn start_session(&mut self) -> Result<()> {
         let status = Command::new("xdotool")
             .arg("version")
@@ -170,9 +166,5 @@ impl ExecutionEngine for ComputerExecutor {
         }
 
         Ok(result.trim().to_string())
-    }
-
-    async fn terminate(&mut self) -> Result<()> {
-        Ok(())
     }
 }

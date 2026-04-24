@@ -18,10 +18,6 @@ impl PythonExecutor {
 
 #[async_trait]
 impl ExecutionEngine for PythonExecutor {
-    fn name(&self) -> &'static str {
-        "PythonExecutor"
-    }
-
     async fn start_session(&mut self) -> Result<()> {
         let child = Command::new("python3")
             .arg("-i") // Interactive mode
@@ -91,12 +87,5 @@ impl ExecutionEngine for PythonExecutor {
         }
 
         Ok(result.trim().to_string())
-    }
-
-    async fn terminate(&mut self) -> Result<()> {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill().await;
-        }
-        Ok(())
     }
 }

@@ -14,8 +14,6 @@ pub enum AppError {
     ConfigError(String),
     #[error("Timeout error")]
     Timeout,
-    #[error("Unknown error")]
-    Unknown,
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -32,14 +30,11 @@ pub type LlmStream = Pin<Box<dyn Stream<Item = Result<String>> + Send>>;
 
 #[async_trait]
 pub trait LlmBackend: Send + Sync {
-    fn name(&self) -> &'static str;
     async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream>;
 }
 
 #[async_trait]
 pub trait ExecutionEngine: Send + Sync {
-    fn name(&self) -> &'static str;
     async fn start_session(&mut self) -> Result<()>;
     async fn execute(&mut self, code: &str, language: &str) -> Result<String>;
-    async fn terminate(&mut self) -> Result<()>;
 }

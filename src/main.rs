@@ -5,7 +5,7 @@ use crate::core::interpreter::Interpreter;
 use crate::plugins::mock_llm::MockLlm;
 use crate::plugins::openai_compatible_llm::OpenAICompatibleLlm;
 use crate::plugins::execution_dispatcher::ExecutionDispatcher;
-use crate::core::traits::{LlmBackend, AppError};
+use crate::core::traits::LlmBackend;
 use std::io::{self, Write};
 use dotenv::dotenv;
 use config::Config;
@@ -99,15 +99,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let llm: Box<dyn LlmBackend> = if llm_type == "openai_compatible" {
         let api_key = std::env::var("LLM_API_KEY").unwrap_or_default();
+        // The URL is used as-is for the POST request. 
+        // Default is the full OpenAI chat completions endpoint.
         let base_url = args.base_url
             .or_else(|| llm_config.get("base_url").map(|v| v.to_string()))
-            .unwrap_or_default();
+            .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string());
+        
         let model = args.model
             .or_else(|| llm_config.get("model").map(|v| v.to_string()))
-            .unwrap_or_default();
+            .unwrap_or_else(|| "gpt-4".to_string());
         
         info!("{} {}", "Using OpenAI Compatible LLM:".cyan(), model.yellow());
-        debug!("Base URL: {}", base_url);
+        debug!("Target URL: {}", base_url);
         Box::new(OpenAICompatibleLlm::new(api_key, base_url, model))
     } else {
         info!("{}", "Using Mock LLM".yellow());
