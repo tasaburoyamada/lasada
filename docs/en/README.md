@@ -1,71 +1,66 @@
 # Lasada
 
-A robust and extensible AI interpreter implemented in Rust.
-Inheriting the design philosophy of Open-Interpreter, it aims to eliminate dependencies on Python and provide a high-performance, secure execution environment.
+**Lasada** is a next-generation AI agent and interpreter developed in Rust. 
+Inheriting the design philosophy of `open-interpreter`, it delivers superior performance, memory safety, and a robust symbolic state management system to execute complex tasks with speed and reliability.
 
-## Features
+## Overview
 
-- **Pure Rust Implementation**: High execution speed and memory safety.
-- **Python-Free**: Directly controls the system's `bash`. No Python runtime required.
-- **Plugin Architecture**:
-  - `LlmBackend`: Flexibly supports OpenAI-compatible APIs, in-house LLMs, and test Mocks.
-  - `ExecutionEngine`: Currently supports Bash. Extensible to Wasm or Docker in the future.
-- **Interactive UI**: Color-coded output with `colored` and progress displays with `indicatif`.
-- **Persistent Sessions**: `BashExecutor` allows for directory changes (`cd`) and variable persistence within the same interaction.
+Lasada is not just a "chatbot" but a high-performance **execution engine** that understands user philosophy and intent to directly manipulate OS resources. By moving away from Python-heavy environments, Lasada provides a lightweight, single-binary Rust architecture designed for professional engineering workflows.
+
+## Key Features
+
+- **Rust-Powered High Performance**:
+  A pure Rust implementation serving as a high-performance, memory-safe replacement for `open-interpreter`.
+- **Advanced Plugin Architecture**:
+  A trait-based design that allows seamless integration of various execution engines:
+  - **Bash**: State-persistent shell execution for direct system control.
+  - **Python**: Script execution within isolated environments.
+  - **Web**: High-speed automated web search, scraping, and real-time information extraction.
+  - **Computer (Computer Use)**: GUI interaction and screen analysis capabilities.
+- **Vision Support**:
+  Native screen analysis support. Features a Visual Grid overlay for precise coordinate recognition and intuitive GUI interaction.
+- **Local RAG (Retrieval-Augmented Generation)**:
+  Embedded vector database powered by `fastembed`. Automatically indexes conversation history and external documentation to retrieve contextually relevant information.
+- **Symbolic Context (.vlog)**:
+  Implements the high-density `.vlog` format for state management. Defines AI behavior through "constraints and state transitions" rather than simple instructions, ensuring consistent and advanced reasoning.
 
 ## Architecture
 
-The system consists of three core components:
-
-1. **Core**: `Interpreter` manages the overall flow, mediating between the LLM and the execution engine.
-2. **Traits**: Defines `LlmBackend` and `ExecutionEngine`.
-3. **Plugins**: Concrete implementations (`OpenAICompatibleLlm`, `BashExecutor`, `MockLlm`).
+1.  **Core Interpreter**: Orchestrates the overall workflow, integrating dialogue management, RAG, and state persistence.
+2.  **Plugin Dispatcher**: Delegates tasks to specialized executors (Bash, Python, Web, Computer) based on the command type.
+3.  **Context Manager**: Synchronizes L1 (short-term memory), L2 (long-term memory via vector DB), and `.vlog` (symbolic state).
+4.  **LLM Connector**: Supports multiple backends, including OpenAI-compatible APIs and local models.
 
 ## Setup
 
-### Requirements
-- [Rust](https://www.rust-lang.org/) (Cargo)
+### Prerequisites
+- [Rust](https://www.rust-lang.org/) (Cargo, Edition 2024 or later)
+- Optional: `xdotool`, `scrot` (for Computer Use features)
 
 ### Installation
 ```bash
+git clone https://github.com/kubodad/lasada.git
+cd lasada
 ./install.sh
-```
-This will build the binary and place it in `~/.local/bin/lasada`, and create a config file at `~/.config/lasada/config.toml`.
-
-## Configuration
-
-Behavior can be customized via `config.toml` and environment variables.
-
-### 1. config.toml
-Place `config.toml` in the project root or `~/.config/lasada/`.
-
-```toml
-[llm]
-type = "openai_compatible" # or "mock"
-model = "your-model-name"
-base_url = "https://your-api-endpoint/v1"
-
-[system]
-prompt = "You are an expert AI assisting engineers..."
-```
-
-### 2. Environment Variables
-Sensitive information like API keys should be set as environment variables.
-
-```bash
-export LLM_API_KEY=your_secret_key
 ```
 
 ## Usage
 
 ```bash
+# Basic startup
 lasada
+
+# Debug mode (verbose logging)
+lasada --debug
+
+# Auto-run mode (skip command confirmation)
+lasada --auto-run
 ```
 
-After launching, enter instructions at the prompt.
-Example:
-- "Show me the list of files in the current directory"
-- "Show the current time"
+## System Philosophy (HV-CAD)
+
+Lasada is designed according to the principles of **HV-CAD (Human-Value Centric Autonomous Development)**. 
+It defines AI as a "target for probability distribution manipulation" where humans remain the "sole arbiters of value." This approach aims to build a "Digital Twin" capable of achieving maximum results with minimal oversight by aligning AI behavior with human philosophical benchmarks.
 
 ## License
 Apache License 2.0

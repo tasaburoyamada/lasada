@@ -1,71 +1,66 @@
-# Lasada
+# Lasada (ラサダ)
 
-Rust で実装された、堅牢かつ拡張性の高い AI インタープリター。
-Open-Interpreter の設計思想を継承しつつ、Python への依存を排除し、高いパフォーマンスと安全な実行環境を提供することを目指しています。
+**Lasada** は、Rust で開発された次世代の AI エージェント・インタープリターです。  
+Open-Interpreter の設計思想を継承しつつ、Rust の持つ圧倒的なパフォーマンスとメモリ安全性、そして独自のシンボリック状態管理により、複雑なタスクを高速かつ堅牢に遂行します。
 
-## 特徴
+## 概要
 
-- **純 Rust 実装**: 高い実行速度とメモリ安全性。
-- **脱 Python**: システムの `bash` を直接制御。Python ランタイムは不要です。
-- **プラグイン・アーキテクチャ**:
-  - `LlmBackend`: OpenAI 互換 API や自社製 LLM、テスト用 Mock などに柔軟に対応。
-  - `ExecutionEngine`: 現在は Bash をサポート。将来的に Wasm や Docker への拡張が可能。
-- **インタラクティブな UI**: `colored` による色分けと `indicatif` によるプログレス表示。
-- **永続的なセッション**: `BashExecutor` により、同一対話内でのディレクトリ移動 (`cd`) や変数の保持が可能。
+Lasada は、単なる「チャットボット」ではなく、ユーザーの哲学と意図を理解し、OS 資源を直接操作して価値を創出する **「実行エンジン」** です。Python 依存の肥大化した環境から脱却し、シングルバイナリで動作する軽量かつ強力な Rust ベースのアーキテクチャを採用しています。
+
+## 主な特徴
+
+- **Rust-Powered High Performance**:  
+  全機能を Rust で実装。高い実行速度とメモリ安全性を保証し、Open-Interpreter の高パフォーマンスな代替手段として機能します。
+- **プラグイン・アーキテクチャ**:  
+  トレイトベースの設計により、多様な実行エンジンをシームレスに統合。
+  - **Bash**: 状態保持型シェル実行（システムの直接制御）。
+  - **Python**: 隔離された環境でのスクリプト実行。
+  - **Web**: 高速なウェブ検索とスクレイピング、情報のリアルタイム抽出。
+  - **Computer (Computer Use)**: GUI 操作、画面情報の解析。
+- **Vision Support (視覚支援)**:  
+  画面解析機能を標準搭載。グリッドオーバーレイ（Visual Grid）により、GUI 上の座標を直感的に認識し、精密な操作を実現します。
+- **Local RAG (長期記憶)**:  
+  `fastembed` を活用したローカル・ベクトルデータベースを内蔵。過去の対話履歴や外部ドキュメントを自動的にインデックス化し、文脈に応じた最適な情報を抽出します。
+- **Symbolic Context (.vlog)**:  
+  高密度な状態管理フォーマット `.vlog` を採用。AI の振る舞いを「指示」ではなく「制約と状態遷移」として定義し、一貫性のある高度な推論を可能にします。
 
 ## アーキテクチャ
 
-システムは以下の 3 つのコアコンポーネントで構成されています。
-
-1. **Core**: `Interpreter` が全体の流れを制御。LLM と実行エンジンの仲介を行います。
-2. **Traits**: `LlmBackend` および `ExecutionEngine` を定義。
-3. **Plugins**: 具体的な実装（`OpenAICompatibleLlm`, `BashExecutor`, `MockLlm`）。
+1.  **Core Interpreter**: 全体のワークフロー（対話、RAG、状態管理）を統合制御。
+2.  **Plugin Dispatcher**: コマンドの種類に応じて最適なプラグイン（Executor）へ処理を委譲。
+3.  **Context Manager**: L1（短期記憶）、L2（ベクトルDBによる長期記憶）、および `.vlog`（シンボリック状態）を同期。
+4.  **LLM Connector**: OpenAI 互換 API などの各種バックエンドに対応。
 
 ## セットアップ
 
 ### 必要条件
-- [Rust](https://www.rust-lang.org/) (Cargo)
+- [Rust](https://www.rust-lang.org/) (Cargo, Edition 2024 以上)
+- オプション: `xdotool`, `scrot` (Computer Use 用)
 
 ### インストール
 ```bash
+git clone https://github.com/kubodad/lasada.git
+cd lasada
 ./install.sh
-```
-これにより、バイナリが `~/.local/bin/lasada` に、設定ファイルが `~/.config/lasada/config.toml` に配置されます。
-
-## 設定方法
-
-`config.toml` および環境変数で動作をカスタマイズできます。
-
-### 1. config.toml
-プロジェクトルートに `config.toml` を配置します。
-
-```toml
-[llm]
-type = "openai_compatible" # または "mock"
-model = "your-model-name"
-base_url = "https://your-api-endpoint/v1"
-
-[system]
-prompt = "あなたはエンジニアを支援するエキスパートAIです..."
-```
-
-### 2. 環境変数
-API キーなどの機密情報は環境変数または `.env` ファイルに記述します。
-
-```bash
-LLM_API_KEY=your_secret_key
 ```
 
 ## 使い方
 
 ```bash
-cargo run
+# 基本起動
+lasada
+
+# デバッグモード（詳細ログ出力）
+lasada --debug
+
+# 自動実行モード（コマンド確認をスキップ）
+lasada --auto-run
 ```
 
-起動後、プロンプトに指示を入力してください。
-例:
-- `今いるディレクトリのファイル一覧を見せて`
-- `現在の時刻を表示して`
+## 開発哲学 (System Philosophy)
+
+Lasada は **HV-CAD (Human-Value Centric Autonomous Development)** の原則に基づき設計されています。
+AI を「確率分布の操作対象」として定義し、人間が「価値判断の独占者」として介入することで、最小限の監視で最大の成果を生み出す「デジタルツイン」の構築を目指しています。
 
 ## ライセンス
 Apache License 2.0
