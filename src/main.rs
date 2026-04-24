@@ -39,6 +39,10 @@ struct Args {
     /// Session name for persistence
     #[arg(short, long)]
     session: Option<String>,
+
+    /// Export session history as Markdown to specified file
+    #[arg(short, long)]
+    export: Option<String>,
 }
 
 fn setup_logger(debug: bool) -> Result<(), fern::InitError> {
@@ -146,6 +150,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("User: {}", input);
         if let Err(e) = interpreter.chat(input).await {
             error!("{} {}", "Error:".red().bold(), e);
+        }
+    }
+
+    if let Some(export_path) = args.export.or_else(|| {
+        let now = chrono::Local::now();
+        let default_name = format!("sessions/report_{}.md", now.format("%Y%m%d%H%M%S"));
+        std::fs::create_dir_all("sessions").ok();
+        Some(default_name)
+    }) {
+        if let Err(e) = interpreter.export_markdown(&export_path).await {
+            error!("Failed to export session: {}", e);
+        } else {
+            info!("Session exported to: {}", export_path);
         }
     }
 

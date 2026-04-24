@@ -242,6 +242,10 @@ impl Interpreter {
                     let mut feedback = format!("Execution Result ({}):\n{}", lang, display_result);
                     if result.to_lowercase().contains("error") || result.to_lowercase().contains("failed") || result.contains("[Exit Code:") {
                         feedback.push_str("\n\n(It seems the command failed or had an error. Please analyze the output and suggest a fix if necessary.)");
+
+                        if (lang == "python" || lang == "python3") && (result.contains("ModuleNotFoundError") || result.contains("ImportError")) {
+                            feedback.push_str("\n\n![[MODULE_NOT_FOUND_DETECTED]] Please generate a bash command to run `pip install <package_name>` and try again.");
+                        }
                     }
 
                     self.history.push(Message {
@@ -261,6 +265,32 @@ impl Interpreter {
             }
         }
         self.save_session().await?;
+        Ok(())
+    }
+
+    pub async fn export_markdown(&self, path: &str) -> Result<()> {
+        let mut markdown = String::new();
+        markdown.push_str("# Lasada Session Report\n\n");
+        
+        for msg in &self.history {
+            match msg.role.as_str() {
+                "user" => {
+                    markdown.push_str("## 👤 User\n\n");
+                    markdown.push_str(&msg.content);
+                    markdown.push_str("\n\n");
+                }
+                "assistant" => {
+                    markdown.push_str("## 🤖 AI\n\n");
+                    markdown.push_str(&msg.content);
+                    markdown.push_str("\n\n");
+                }
+                _ => {} // Skip internal system/vlog/rag messages
+            }
+        }
+
+        fs::write(path, markdown)
+            .map_err(|e| crate::core::traits::AppError::ExecutionError(format!("Failed to export Markdown: {}", e)))?;
+        
         Ok(())
     }
 
