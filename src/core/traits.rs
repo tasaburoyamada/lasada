@@ -38,6 +38,6 @@ pub trait LlmBackend: Send + Sync {
 pub trait ExecutionEngine: Send + Sync {
     fn name(&self) -> &'static str;
     async fn start_session(&mut self) -> Result<()>;
-    async fn execute(&mut self, code: &str) -> Result<String>;
+    async fn execute(&mut self, code: &str, language: &str) -> Result<String>;
     async fn terminate(&mut self) -> Result<()>;
 }

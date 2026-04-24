@@ -5,13 +5,15 @@ use futures_util::StreamExt;
 use std::io::{self, Write};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::info;
+use log::{info, debug};
+use tiktoken_rs::cl100k_base;
 
 pub struct Interpreter {
     llm: Box<dyn LlmBackend>,
     executor: Arc<Mutex<dyn ExecutionEngine>>,
     history: Vec<Message>,
     system_prompt: String,
+    max_tokens: usize,
 }
 
 impl Interpreter {
@@ -24,6 +26,7 @@ impl Interpreter {
             executor: Arc::new(Mutex::new(executor)),
             history: Vec::new(),
             system_prompt,
+            max_tokens: 8000,
         }
     }
 
@@ -46,6 +49,8 @@ impl Interpreter {
         });
 
         for _ in 0..10 {
+            self.manage_context();
+
             let pb = ProgressBar::new_spinner();
             pb.set_style(ProgressStyle::default_spinner()
                 .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
@@ -66,7 +71,12 @@ impl Interpreter {
                 io::stdout().flush().unwrap();
                 full_response.push_str(&text);
             }
+            println!("\n"); // Clear the stream line
+            
+            // Render rich markdown
+            termimad::print_text(&full_response);
             println!();
+            
             info!("AI: {}", full_response);
 
             self.history.push(Message {
@@ -74,15 +84,15 @@ impl Interpreter {
                 content: full_response.clone(),
             });
 
-            let codes = self.extract_bash_code(&full_response);
-            if codes.is_empty() {
+            let code_blocks = self.extract_code_blocks(&full_response);
+            if code_blocks.is_empty() {
                 break;
             }
             
-            for code in codes {
+            for (lang, code) in code_blocks {
                 println!("{}", "──────────────────────────────────────────────────".bright_black());
-                println!("{} {}", "🚀 Executing:".yellow().bold(), code.blue());
-                info!("Executing: {}", code);
+                println!("{} {} ({})", "🚀 Executing:".yellow().bold(), code.blue(), lang.magenta());
+                info!("Executing ({}): {}", lang, code);
                 
                 let pb_exec = ProgressBar::new_spinner();
                 pb_exec.set_style(ProgressStyle::default_spinner().template("{spinner:.yellow} Running...").unwrap());
@@ -90,7 +100,7 @@ impl Interpreter {
 
                 let result = {
                     let mut executor = self.executor.lock().await;
-                    executor.execute(&code).await?
+                    executor.execute(&code, &lang).await?
                 };
 
                 pb_exec.finish_and_clear();
@@ -100,7 +110,7 @@ impl Interpreter {
 
                 self.history.push(Message {
                     role: "user".to_string(),
-                    content: format!("Execution Result:\n{}", result),
+                    content: format!("Execution Result ({}):\n{}", lang, result),
                 });
             }
         }
@@ -108,14 +118,40 @@ impl Interpreter {
         Ok(())
     }
 
-    fn extract_bash_code(&self, text: &str) -> Vec<String> {
-        let mut codes = Vec::new();
-        // Robust regex: case-insensitive "bash", optional whitespace after it, 
-        // and handles different line endings.
-        let re = regex::Regex::new(r"(?i)```bash\s*[\r\n]+([\s\S]*?)```").unwrap();
+    fn extract_code_blocks(&self, text: &str) -> Vec<(String, String)> {
+        let mut blocks = Vec::new();
+        // Regex to match any code block with a language tag
+        let re = regex::Regex::new(r"```([a-zA-Z0-9]*)\s*[\r\n]+([\s\S]*?)```").unwrap();
         for cap in re.captures_iter(text) {
-            codes.push(cap[1].trim().to_string());
+            let lang = cap[1].to_lowercase();
+            let code = cap[2].trim().to_string();
+            blocks.push((lang, code));
         }
-        codes
+        blocks
+    }
+
+    fn manage_context(&mut self) {
+        let bpe = cl100k_base().unwrap();
+        let mut current_tokens = 0;
+        
+        // Count tokens
+        for msg in &self.history {
+            current_tokens += bpe.encode_with_special_tokens(&msg.content).len();
+        }
+
+        debug!("Current context tokens: {}", current_tokens);
+
+        if current_tokens > self.max_tokens {
+            info!("Context window exceeded ({} tokens). Truncating history...", current_tokens);
+            // Keep system prompt (index 0) and the last 5 messages as a simple heuristic
+            if self.history.len() > 6 {
+                let system_msg = self.history.remove(0);
+                let keep_count = 5;
+                let remove_count = self.history.len() - keep_count;
+                self.history.drain(0..remove_count);
+                self.history.insert(0, system_msg);
+                debug!("Truncated history. New length: {}", self.history.len());
+            }
+        }
     }
 }

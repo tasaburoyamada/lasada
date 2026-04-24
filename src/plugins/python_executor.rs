@@ -5,37 +5,31 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::Duration;
 
-pub struct BashExecutor {
+pub struct PythonExecutor {
     child: Option<Child>,
 }
 
-impl BashExecutor {
+impl PythonExecutor {
     pub fn new() -> Self {
         Self { child: None }
     }
 }
 
 #[async_trait]
-impl ExecutionEngine for BashExecutor {
+impl ExecutionEngine for PythonExecutor {
     fn name(&self) -> &'static str {
-        "BashExecutor"
+        "PythonExecutor"
     }
 
     async fn start_session(&mut self) -> Result<()> {
-        let mut child = Command::new("bash")
+        let child = Command::new("python3")
+            .arg("-i") // Interactive mode
+            .arg("-u") // Unbuffered
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| AppError::ExecutionError(format!("Failed to spawn bash: {}", e)))?;
-
-        // Redirect stderr to stdout for this session to simplify output capturing
-        if let Some(stdin) = child.stdin.as_mut() {
-            stdin.write_all(b"exec 2>&1\n").await
-                .map_err(|e| AppError::ExecutionError(format!("Failed to setup stderr redirection: {}", e)))?;
-            stdin.flush().await
-                .map_err(|e| AppError::ExecutionError(format!("Failed to flush stdin: {}", e)))?;
-        }
+            .map_err(|e| AppError::ExecutionError(format!("Failed to spawn python3: {}", e)))?;
 
         self.child = Some(child);
         Ok(())
@@ -50,10 +44,16 @@ impl ExecutionEngine for BashExecutor {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros();
-        let delimiter = format!("__LASADA_END_{}_{}__", id, timestamp);
+        let delimiter = format!("__LASADA_PY_END_{}_{}__", id, timestamp);
         
-        // Removed { } wrapper to prevent injection issues and used newlines for safety
-        let full_command = format!("{}\necho \"{}:$?\"\n", code.trim(), delimiter);
+        // Wrap code to print delimiter and status after execution
+        let full_command = format!(
+            "{}\nprint(f\"{}:{}{}\")\n", 
+            code.trim(), 
+            delimiter, 
+            0, // For now, assume success if it reaches here
+            ""
+        );
 
         stdin.write_all(full_command.as_bytes()).await
             .map_err(|e| AppError::ExecutionError(format!("Failed to write to stdin: {}", e)))?;
@@ -61,11 +61,8 @@ impl ExecutionEngine for BashExecutor {
             .map_err(|e| AppError::ExecutionError(format!("Failed to flush stdin: {}", e)))?;
 
         let stdout = child.stdout.as_mut().ok_or(AppError::ExecutionError("Failed to open stdout".into()))?;
-        let stderr = child.stderr.as_mut().ok_or(AppError::ExecutionError("Failed to open stderr".into()))?;
         
         let mut stdout_reader = BufReader::new(stdout).lines();
-        let mut stderr_reader = BufReader::new(stderr).lines();
-        
         let mut result = String::new();
         
         loop {
@@ -74,27 +71,12 @@ impl ExecutionEngine for BashExecutor {
                     match line {
                         Ok(Some(l)) => {
                             if l.starts_with(&delimiter) {
-                                let status = l.strip_prefix(&delimiter)
-                                    .and_then(|s| s.strip_prefix(':'))
-                                    .unwrap_or("0");
-                                if status != "0" {
-                                    result.push_str(&format!("\n[Exit Code: {}]", status));
-                                }
                                 break;
                             }
                             result.push_str(&l);
                             result.push('\n');
                         }
                         _ => break,
-                    }
-                }
-                line = stderr_reader.next_line() => {
-                    match line {
-                        Ok(Some(l)) => {
-                            result.push_str(&l);
-                            result.push('\n');
-                        }
-                        _ => {},
                     }
                 }
                 _ = tokio::time::sleep(Duration::from_secs(30)) => {
