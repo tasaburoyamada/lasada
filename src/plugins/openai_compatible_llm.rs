@@ -40,9 +40,26 @@ impl LlmBackend for OpenAICompatibleLlm {
     async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream> {
         let client = reqwest::Client::new();
         
+        let messages: Vec<serde_json::Value> = history.into_iter().map(|m| {
+            if let Some(img) = m.image_base64 {
+                json!({
+                    "role": m.role,
+                    "content": [
+                        { "type": "text", "text": m.content },
+                        { "type": "image_url", "image_url": { "url": format!("data:image/jpeg;base64,{}", img) } }
+                    ]
+                })
+            } else {
+                json!({
+                    "role": m.role,
+                    "content": m.content
+                })
+            }
+        }).collect();
+
         let body = json!({
             "model": self.model,
-            "messages": history,
+            "messages": messages,
             "stream": true
         });
 

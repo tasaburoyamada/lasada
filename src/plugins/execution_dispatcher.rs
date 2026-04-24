@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::plugins::bash_executor::BashExecutor;
 use crate::plugins::python_executor::PythonExecutor;
 use crate::plugins::computer_executor::ComputerExecutor;
+use crate::plugins::web_executor::WebExecutor;
 
 pub struct ExecutionDispatcher {
     executors: HashMap<String, Box<dyn ExecutionEngine>>,
@@ -20,6 +21,7 @@ impl ExecutionDispatcher {
         executors.insert("python".to_string(), Box::new(PythonExecutor::new()));
         executors.insert("python3".to_string(), Box::new(PythonExecutor::new()));
         executors.insert("computer".to_string(), Box::new(ComputerExecutor::new()));
+        executors.insert("web".to_string(), Box::new(WebExecutor::new()));
 
         Self {
             executors,

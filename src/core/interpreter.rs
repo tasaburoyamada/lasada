@@ -91,6 +91,7 @@ impl Interpreter {
             self.history.push(Message {
                 role: "system".to_string(),
                 content,
+                image_base64: None,
             });
         }
         
@@ -123,6 +124,7 @@ impl Interpreter {
         self.history.push(Message {
             role: "user".to_string(),
             content: processed_input,
+            image_base64: None,
         });
 
         for _ in 0..10 {
@@ -160,6 +162,7 @@ impl Interpreter {
             self.history.push(Message {
                 role: "assistant".to_string(),
                 content: full_response.clone(),
+                image_base64: None,
             });
 
             let code_blocks = self.extract_code_blocks(&full_response);
@@ -198,7 +201,21 @@ impl Interpreter {
                     info!("Result: {}", result);
                     println!("{}", "──────────────────────────────────────────────────".bright_black());
 
-                    let mut feedback = format!("Execution Result ({}):\n{}", lang, result);
+                    let mut image_base64 = None;
+                    let mut display_result = result.clone();
+
+                    if result.contains("SCREENSHOT_SAVED: ") {
+                        if let Some(path) = result.lines().find(|l| l.contains("SCREENSHOT_SAVED: ")) {
+                            let path = path.replace("SCREENSHOT_SAVED: ", "").trim().to_string();
+                            if let Ok(bytes) = fs::read(&path) {
+                                use base64::{Engine as _, engine::general_purpose};
+                                image_base64 = Some(general_purpose::STANDARD.encode(bytes));
+                                display_result = format!("(Screenshot captured and attached: {})", path);
+                            }
+                        }
+                    }
+
+                    let mut feedback = format!("Execution Result ({}):\n{}", lang, display_result);
                     if result.to_lowercase().contains("error") || result.to_lowercase().contains("failed") || result.contains("[Exit Code:") {
                         feedback.push_str("\n\n(It seems the command failed or had an error. Please analyze the output and suggest a fix if necessary.)");
                     }
@@ -206,12 +223,14 @@ impl Interpreter {
                     self.history.push(Message {
                         role: "user".to_string(),
                         content: feedback,
+                        image_base64,
                     });
                 } else {
                     println!("{}", "⏭️  Skipped by user.".yellow());
                     self.history.push(Message {
                         role: "user".to_string(),
                         content: format!("Command ({}) was skipped by user. Please provide an alternative or explain why it was needed.", lang),
+                        image_base64: None,
                     });
                     break;
                 }
@@ -260,6 +279,7 @@ impl Interpreter {
                 self.history.insert(0, Message {
                     role: "system".to_string(),
                     content: summary,
+                    image_base64: None,
                 });
                 self.history.insert(0, system_msg);
                 debug!("Summarized history. New length: {}", self.history.len());
@@ -278,10 +298,12 @@ impl Interpreter {
         summarization_history.push(Message {
             role: "system".to_string(),
             content: "@CTX:[DOM:HV-CAD|SUB:ENCODER|GOAL:STATE_SERIALIZATION] ![[STRICT_VLOG_FORMAT]] ![[NO_EXPLANATION]] ![[MINIMAL_TOKEN]] @BIAS:{C:1.0, S:1.0, P:1.0}".to_string(),
+            image_base64: None,
         });
         summarization_history.push(Message {
             role: "user".to_string(),
             content: format!("@INPUT:\n\n{}", messages_text),
+            image_base64: None,
         });
 
         let mut stream = self.llm.stream_chat_completion(summarization_history).await?;
@@ -303,11 +325,12 @@ impl Interpreter {
             let path_buf = PathBuf::from(path);
             
             if let Some(ext) = path_buf.extension().and_then(|e| e.to_str()) {
-                if ext.to_lowercase() == "pdf" {
-                    // Try to use pdftotext
+                let ext_lower = ext.to_lowercase();
+                if ext_lower == "pdf" {
+                    // ... (pdf logic)
                     match tokio::process::Command::new("pdftotext")
                         .arg(path)
-                        .arg("-") // Output to stdout
+                        .arg("-")
                         .output()
                         .await 
                     {
@@ -319,6 +342,39 @@ impl Interpreter {
                         _ => {
                             warn!("Failed to extract text from PDF: {}", path);
                             file_contents.push_str(&format!("\n\n(Error: Failed to extract text from PDF {}. Make sure 'poppler-utils' is installed.)\n", path));
+                        }
+                    }
+                    continue;
+                } else if ext_lower == "ipynb" {
+                    // Jupyter Notebook support
+                    match fs::read_to_string(path) {
+                        Ok(content) => {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                                let mut notebook_text = String::new();
+                                if let Some(cells) = json.get("cells").and_then(|c| c.as_array()) {
+                                    for cell in cells {
+                                        let cell_type = cell.get("cell_type").and_then(|t| t.as_str()).unwrap_or("");
+                                        let source = cell.get("source").and_then(|s| {
+                                            if s.is_array() {
+                                                Some(s.as_array().unwrap().iter().map(|line| line.as_str().unwrap_or("")).collect::<String>())
+                                            } else {
+                                                s.as_str().map(|s| s.to_string())
+                                            }
+                                        }).unwrap_or_default();
+
+                                        if cell_type == "code" {
+                                            notebook_text.push_str(&format!("\n# In [ ]:\n{}\n", source));
+                                        } else if cell_type == "markdown" {
+                                            notebook_text.push_str(&format!("\n'''\n{}\n'''\n", source));
+                                        }
+                                    }
+                                    file_contents.push_str(&format!("\n\n--- Content of Jupyter Notebook {} ---\n{}\n---\n", path, notebook_text));
+                                    info!("Injected Jupyter Notebook: {}", path);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to read ipynb {}: {}", path, e);
                         }
                     }
                     continue;

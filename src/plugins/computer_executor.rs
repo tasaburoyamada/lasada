@@ -33,17 +33,49 @@ impl ExecutionEngine for ComputerExecutor {
     }
 
     async fn execute(&mut self, code: &str, _language: &str) -> Result<String> {
-        // Parse the 'code' which should be computer commands
-        // For now, we'll treat the code as direct xdotool commands for simplicity
-        // e.g., "mousemove 100 100 click 1"
-        
         let mut result = String::new();
         let lines = code.lines();
 
         for line in lines {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.is_empty() { continue; }
+            let line = line.trim();
+            if line.is_empty() { continue; }
 
+            if line == "screenshot" {
+                // Take screenshot
+                let path = "/tmp/lasada_screenshot.jpg";
+                // Try scrot first
+                let output = Command::new("scrot")
+                    .arg("-o")
+                    .arg(path)
+                    .output()
+                    .await;
+
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        result.push_str(&format!("SCREENSHOT_SAVED: {}\n", path));
+                        continue;
+                    }
+                }
+                
+                // Fallback to gnome-screenshot
+                let output = Command::new("gnome-screenshot")
+                    .arg("-f")
+                    .arg(path)
+                    .output()
+                    .await;
+
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        result.push_str(&format!("SCREENSHOT_SAVED: {}\n", path));
+                        continue;
+                    }
+                }
+
+                result.push_str("Error: Failed to take screenshot. Make sure 'scrot' or 'gnome-screenshot' is installed.\n");
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split_whitespace().collect();
             let output = Command::new("xdotool")
                 .args(&parts)
                 .output()

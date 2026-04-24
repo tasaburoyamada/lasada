@@ -24,6 +24,8 @@ pub type Result<T> = std::result::Result<T, AppError>;
 pub struct Message {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_base64: Option<String>,
 }
 
 pub type LlmStream = Pin<Box<dyn Stream<Item = Result<String>> + Send>>;
