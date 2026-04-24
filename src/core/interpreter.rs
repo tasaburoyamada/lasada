@@ -11,6 +11,9 @@ use dialoguer::{Confirm, theme::ColorfulTheme};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::core::vector_db::VectorDB;
+use std::collections::HashMap;
+
 pub struct Interpreter {
     llm: Box<dyn LlmBackend>,
     executor: Arc<Mutex<dyn ExecutionEngine>>,
@@ -19,6 +22,7 @@ pub struct Interpreter {
     max_tokens: usize,
     auto_run: bool,
     session_name: Option<String>,
+    vector_db: Option<VectorDB>,
 }
 
 impl Interpreter {
@@ -34,6 +38,7 @@ impl Interpreter {
             max_tokens: 8000,
             auto_run: false,
             session_name: None,
+            vector_db: None,
         }
     }
 
@@ -77,6 +82,11 @@ impl Interpreter {
         let mut executor = self.executor.lock().await;
         executor.start_session().await?;
         
+        match VectorDB::new() {
+            Ok(db) => self.vector_db = Some(db),
+            Err(e) => warn!("Failed to initialize VectorDB: {}. Long-term memory disabled.", e),
+        }
+        
         if self.history.is_empty() {
             let sys_info = self.get_system_info();
             let mut content = self.system_prompt.clone();
@@ -119,7 +129,21 @@ impl Interpreter {
     }
 
     pub async fn chat(&mut self, user_input: &str) -> Result<()> {
-        let processed_input = self.analyze_files(user_input).await;
+        let mut processed_input = self.analyze_files(user_input).await;
+        
+        // Long-term memory retrieval
+        if let Some(db) = &self.vector_db {
+            if let Ok(related) = db.search(user_input, 3) {
+                if !related.is_empty() {
+                    debug!("RAG: Found {} related items", related.len());
+                    processed_input.push_str("\n\n@RAG_CONTEXT:[");
+                    for entry in related {
+                        processed_input.push_str(&format!("[[{}]] ", entry.text.chars().take(200).collect::<String>().replace("\n", " ")));
+                    }
+                    processed_input.push_str("]\n");
+                }
+            }
+        }
         
         self.history.push(Message {
             role: "user".to_string(),
@@ -276,6 +300,13 @@ impl Interpreter {
                 println!("{}", "⏳ Summarizing old context...".yellow().dimmed());
                 let summary = self.generate_internal_summary(&to_summarize).await?;
                 
+                // Save to long-term memory
+                if let Some(db) = &mut self.vector_db {
+                    let mut meta = HashMap::new();
+                    meta.insert("type".to_string(), "summary".to_string());
+                    db.add(&summary, meta).ok();
+                }
+
                 self.history.insert(0, Message {
                     role: "system".to_string(),
                     content: summary,
@@ -314,8 +345,8 @@ impl Interpreter {
         Ok(summary.trim().to_string())
     }
 
-    async fn analyze_files(&self, text: &str) -> String {
-        let mut result = text.to_string();
+    async fn analyze_files(&mut self, text: &str) -> String {
+        let result = text.to_string();
         // Regex to find @path/to/file
         let re = regex::Regex::new(r"@([^\s]+)").unwrap();
         
@@ -323,7 +354,8 @@ impl Interpreter {
         for cap in re.captures_iter(text) {
             let path = &cap[1];
             let path_buf = PathBuf::from(path);
-            
+            let mut content_to_index = String::new();
+
             if let Some(ext) = path_buf.extension().and_then(|e| e.to_str()) {
                 let ext_lower = ext.to_lowercase();
                 if ext_lower == "pdf" {
@@ -335,16 +367,16 @@ impl Interpreter {
                         .await 
                     {
                         Ok(output) if output.status.success() => {
-                            let content = String::from_utf8_lossy(&output.stdout);
+                            let content = String::from_utf8_lossy(&output.stdout).to_string();
                             file_contents.push_str(&format!("\n\n--- Content of PDF {} ---\n{}\n---\n", path, content));
                             info!("Injected PDF file: {}", path);
+                            content_to_index = content;
                         }
                         _ => {
                             warn!("Failed to extract text from PDF: {}", path);
                             file_contents.push_str(&format!("\n\n(Error: Failed to extract text from PDF {}. Make sure 'poppler-utils' is installed.)\n", path));
                         }
                     }
-                    continue;
                 } else if ext_lower == "ipynb" {
                     // Jupyter Notebook support
                     match fs::read_to_string(path) {
@@ -370,6 +402,7 @@ impl Interpreter {
                                     }
                                     file_contents.push_str(&format!("\n\n--- Content of Jupyter Notebook {} ---\n{}\n---\n", path, notebook_text));
                                     info!("Injected Jupyter Notebook: {}", path);
+                                    content_to_index = notebook_text;
                                 }
                             }
                         }
@@ -377,23 +410,49 @@ impl Interpreter {
                             warn!("Failed to read ipynb {}: {}", path, e);
                         }
                     }
-                    continue;
+                } else {
+                    match fs::read_to_string(path) {
+                        Ok(content) => {
+                            file_contents.push_str(&format!("\n\n--- Content of {} ---\n{}\n---\n", path, content));
+                            info!("Injected file: {}", path);
+                            content_to_index = content;
+                        }
+                        Err(e) => {
+                            warn!("Failed to read file {}: {}", path, e);
+                            file_contents.push_str(&format!("\n\n(Error reading file {}: {})\n", path, e));
+                        }
+                    }
+                }
+            } else {
+                // No extension, treat as text
+                match fs::read_to_string(path) {
+                    Ok(content) => {
+                        file_contents.push_str(&format!("\n\n--- Content of {} ---\n{}\n---\n", path, content));
+                        info!("Injected file: {}", path);
+                        content_to_index = content;
+                    }
+                    Err(e) => {
+                        warn!("Failed to read file {}: {}", path, e);
+                        file_contents.push_str(&format!("\n\n(Error reading file {}: {})\n", path, e));
+                    }
                 }
             }
 
-            match fs::read_to_string(path) {
-                Ok(content) => {
-                    file_contents.push_str(&format!("\n\n--- Content of {} ---\n{}\n---\n", path, content));
-                    info!("Injected file: {}", path);
-                }
-                Err(e) => {
-                    warn!("Failed to read file {}: {}", path, e);
-                    file_contents.push_str(&format!("\n\n(Error reading file {}: {})\n", path, e));
+            // Index content in chunks
+            if !content_to_index.is_empty() {
+                if let Some(db) = &mut self.vector_db {
+                    let mut meta = HashMap::new();
+                    meta.insert("path".to_string(), path.to_string());
+                    
+                    // Simple chunking by 1000 characters
+                    for chunk in content_to_index.chars().collect::<Vec<_>>().chunks(1000) {
+                        let chunk_str: String = chunk.iter().collect();
+                        db.add(&chunk_str, meta.clone()).ok();
+                    }
                 }
             }
         }
         
-        result.push_str(&file_contents);
-        result
+        format!("{}{}", result, file_contents)
     }
 }
