@@ -78,13 +78,43 @@ impl Interpreter {
         executor.start_session().await?;
         
         if self.history.is_empty() {
+            let sys_info = self.get_system_info();
+            let mut content = self.system_prompt.clone();
+            // Inject symbolic system state
+            content.push_str("\n\n@CTX:[DOM:SYSTEM_ROOT|GOAL:INITIALIZED]\n");
+            content.push_str("@BIAS:{P:1.0, M:1.0, S:1.0, D:1.0, C:1.0}\n");
+            content.push_str("CONCEPT: [[READY]] [[ENV_LOADED]]\n");
+            content.push_str("--- Runtime Specs ---\n");
+            content.push_str(&sys_info);
+            content.push_str("\n--------------------\n");
+
             self.history.push(Message {
                 role: "system".to_string(),
-                content: self.system_prompt.clone(),
+                content,
             });
         }
         
         Ok(())
+    }
+
+    fn get_system_info(&self) -> String {
+        use sysinfo::System;
+        let mut sys = System::new_all();
+        sys.refresh_all();
+
+        let os = System::name().unwrap_or_else(|| "Unknown".to_string());
+        let kernel = System::kernel_version().unwrap_or_else(|| "Unknown".to_string());
+        let host = System::host_name().unwrap_or_else(|| "Unknown".to_string());
+        let cpu = sys.cpus().len();
+        let mem = sys.total_memory() / 1024 / 1024; // MB
+        let pwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "Unknown".to_string());
+
+        format!(
+            "OS: {}\nKernel: {}\nHostname: {}\nCPU Cores: {}\nTotal Memory: {} MB\nWorking Directory: {}",
+            os, kernel, host, cpu, mem, pwd
+        )
     }
 
     pub async fn chat(&mut self, user_input: &str) -> Result<()> {
@@ -96,7 +126,7 @@ impl Interpreter {
         });
 
         for _ in 0..10 {
-            self.manage_context();
+            self.manage_context().await?;
             self.save_session().await?;
 
             let pb = ProgressBar::new_spinner();
@@ -168,9 +198,14 @@ impl Interpreter {
                     info!("Result: {}", result);
                     println!("{}", "──────────────────────────────────────────────────".bright_black());
 
+                    let mut feedback = format!("Execution Result ({}):\n{}", lang, result);
+                    if result.to_lowercase().contains("error") || result.to_lowercase().contains("failed") || result.contains("[Exit Code:") {
+                        feedback.push_str("\n\n(It seems the command failed or had an error. Please analyze the output and suggest a fix if necessary.)");
+                    }
+
                     self.history.push(Message {
                         role: "user".to_string(),
-                        content: format!("Execution Result ({}):\n{}", lang, result),
+                        content: feedback,
                     });
                 } else {
                     println!("{}", "⏭️  Skipped by user.".yellow());
@@ -198,7 +233,7 @@ impl Interpreter {
         blocks
     }
 
-    fn manage_context(&mut self) {
+    async fn manage_context(&mut self) -> Result<()> {
         let bpe = cl100k_base().unwrap();
         let mut current_tokens = 0;
         
@@ -210,17 +245,51 @@ impl Interpreter {
         debug!("Current context tokens: {}", current_tokens);
 
         if current_tokens > self.max_tokens {
-            info!("Context window exceeded ({} tokens). Truncating history...", current_tokens);
+            info!("Context window exceeded ({} tokens). Summarizing history...", current_tokens);
             // Keep system prompt (index 0) and the last 5 messages as a simple heuristic
             if self.history.len() > 6 {
                 let system_msg = self.history.remove(0);
                 let keep_count = 5;
-                let remove_count = self.history.len() - keep_count;
-                self.history.drain(0..remove_count);
+                let remove_index = self.history.len() - keep_count;
+                
+                let to_summarize: Vec<Message> = self.history.drain(0..remove_index).collect();
+                
+                println!("{}", "⏳ Summarizing old context...".yellow().dimmed());
+                let summary = self.generate_internal_summary(&to_summarize).await?;
+                
+                self.history.insert(0, Message {
+                    role: "system".to_string(),
+                    content: summary,
+                });
                 self.history.insert(0, system_msg);
-                debug!("Truncated history. New length: {}", self.history.len());
+                debug!("Summarized history. New length: {}", self.history.len());
             }
         }
+        Ok(())
+    }
+
+    async fn generate_internal_summary(&self, messages: &[Message]) -> Result<String> {
+        let mut summarization_history = Vec::new();
+        let messages_text = messages.iter()
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        summarization_history.push(Message {
+            role: "system".to_string(),
+            content: "@CTX:[DOM:HV-CAD|SUB:ENCODER|GOAL:STATE_SERIALIZATION] ![[STRICT_VLOG_FORMAT]] ![[NO_EXPLANATION]] ![[MINIMAL_TOKEN]] @BIAS:{C:1.0, S:1.0, P:1.0}".to_string(),
+        });
+        summarization_history.push(Message {
+            role: "user".to_string(),
+            content: format!("@INPUT:\n\n{}", messages_text),
+        });
+
+        let mut stream = self.llm.stream_chat_completion(summarization_history).await?;
+        let mut summary = String::new();
+        while let Some(chunk) = stream.next().await {
+            summary.push_str(&chunk?);
+        }
+        Ok(summary.trim().to_string())
     }
 
     async fn analyze_files(&self, text: &str) -> String {
@@ -231,6 +300,31 @@ impl Interpreter {
         let mut file_contents = String::new();
         for cap in re.captures_iter(text) {
             let path = &cap[1];
+            let path_buf = PathBuf::from(path);
+            
+            if let Some(ext) = path_buf.extension().and_then(|e| e.to_str()) {
+                if ext.to_lowercase() == "pdf" {
+                    // Try to use pdftotext
+                    match tokio::process::Command::new("pdftotext")
+                        .arg(path)
+                        .arg("-") // Output to stdout
+                        .output()
+                        .await 
+                    {
+                        Ok(output) if output.status.success() => {
+                            let content = String::from_utf8_lossy(&output.stdout);
+                            file_contents.push_str(&format!("\n\n--- Content of PDF {} ---\n{}\n---\n", path, content));
+                            info!("Injected PDF file: {}", path);
+                        }
+                        _ => {
+                            warn!("Failed to extract text from PDF: {}", path);
+                            file_contents.push_str(&format!("\n\n(Error: Failed to extract text from PDF {}. Make sure 'poppler-utils' is installed.)\n", path));
+                        }
+                    }
+                    continue;
+                }
+            }
+
             match fs::read_to_string(path) {
                 Ok(content) => {
                     file_contents.push_str(&format!("\n\n--- Content of {} ---\n{}\n---\n", path, content));

@@ -4,6 +4,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::Duration;
+use std::io::{self, Write};
 
 pub struct BashExecutor {
     child: Option<Child>,
@@ -82,6 +83,10 @@ impl ExecutionEngine for BashExecutor {
                                 }
                                 break;
                             }
+                            // Visual feedback
+                            println!("{}", l);
+                            io::stdout().flush().ok();
+
                             result.push_str(&l);
                             result.push('\n');
                         }

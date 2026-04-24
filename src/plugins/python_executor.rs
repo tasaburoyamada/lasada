@@ -4,6 +4,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::Duration;
+use std::io::{self, Write};
 
 pub struct PythonExecutor {
     child: Option<Child>,
@@ -73,6 +74,10 @@ impl ExecutionEngine for PythonExecutor {
                             if l.starts_with(&delimiter) {
                                 break;
                             }
+                            // Visual feedback
+                            println!("{}", l);
+                            io::stdout().flush().ok();
+
                             result.push_str(&l);
                             result.push('\n');
                         }
