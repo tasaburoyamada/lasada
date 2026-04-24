@@ -6,6 +6,11 @@ APP_NAME="lasada"
 INSTALL_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/$APP_NAME"
 
+# Source cargo env if it exists
+if [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
 echo "Installing $APP_NAME..."
 
 # 1. Check for Cargo

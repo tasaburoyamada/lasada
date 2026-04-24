@@ -98,9 +98,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let llm_type = llm_config.get("type").map(|v| v.to_string()).unwrap_or_default();
     
     let llm: Box<dyn LlmBackend> = if llm_type == "openai_compatible" {
-        let api_key = std::env::var("LLM_API_KEY").unwrap_or_default();
+        // Priority: Environment Variable > Config File
+        let api_key = std::env::var("LLM_API_KEY")
+            .ok()
+            .or_else(|| llm_config.get("api_key").and_then(|v| v.clone().into_string().ok()))
+            .unwrap_or_default();
+
+        if !api_key.is_empty() {
+            let len = api_key.len();
+            let prefix: String = api_key.chars().take(2).collect();
+            let suffix: String = api_key.chars().skip(len.saturating_sub(2)).collect();
+            debug!("API Key loaded: {prefix}...{suffix} ({len} chars)");
+        }
+
         // The URL is used as-is for the POST request. 
-        // Default is the full OpenAI chat completions endpoint.
+        // Default is the standard OpenAI chat completions endpoint.
         let base_url = args.base_url
             .or_else(|| llm_config.get("base_url").map(|v| v.to_string()))
             .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string());
