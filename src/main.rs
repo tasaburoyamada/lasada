@@ -31,6 +31,14 @@ struct Args {
     /// System prompt
     #[arg(short, long)]
     prompt: Option<String>,
+
+    /// Automatically run code without confirmation
+    #[arg(short, long)]
+    auto_run: bool,
+
+    /// Session name for persistence
+    #[arg(short, long)]
+    session: Option<String>,
 }
 
 fn setup_logger(debug: bool) -> Result<(), fern::InitError> {
@@ -105,6 +113,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let executor = ExecutionDispatcher::new();
     let mut interpreter = Interpreter::new(llm, executor, system_prompt);
     
+    // Set auto-run and session
+    interpreter.set_auto_run(args.auto_run);
+    if let Some(session_name) = args.session {
+        if let Err(e) = interpreter.load_session(&session_name).await {
+            error!("Failed to load session: {}", e);
+        }
+    }
+
     if let Err(e) = interpreter.init().await {
         error!("{} {}", "Initialization Error:".red().bold(), e);
         return Err(e.into());
