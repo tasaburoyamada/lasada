@@ -32,3 +32,6 @@ base64 = "0.22.1"
 urlencoding = "2.1.3"
 fastembed = "4.2.0"
 openssl = { version = "0.10", features = ["vendored"] }
+image = "0.25.5"
+imageproc = "0.25.0"
+ab_glyph = "0.2.32"
