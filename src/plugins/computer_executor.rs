@@ -4,7 +4,7 @@ use tokio::process::Command;
 use image::{DynamicImage, Rgba, GenericImageView};
 use imageproc::drawing::{draw_line_segment_mut, draw_text_mut};
 use ab_glyph::{FontVec, PxScale};
-use log::warn;
+use log::{info, debug, trace, warn};
 use std::fs;
 
 pub struct ComputerExecutor;
@@ -82,7 +82,9 @@ impl ExecutionEngine for ComputerExecutor {
             .await;
         
         if status.is_err() || !status.unwrap().success() {
-            warn!("xdotool not found. Computer operation may fail.");
+            warn!("[COMP_INIT] xdotool not found. Computer operation may fail.");
+        } else {
+            debug!("[COMP_INIT] xdotool found and ready.");
         }
         Ok(())
     }
@@ -95,30 +97,37 @@ impl ExecutionEngine for ComputerExecutor {
             let line = line.trim();
             if line.is_empty() { continue; }
 
+            trace!("[COMP_EXEC] Raw Command: {}", line);
+
             if line == "screenshot" || line == "screenshot_annotated" {
                 let path = "/tmp/lasada_screenshot.jpg";
+                debug!("[COMP_VISION] Capturing screenshot: {}", line);
                 let output = Command::new("scrot").arg("-o").arg(path).output().await;
                 if output.is_err() || !output.unwrap().status.success() {
                     let output = Command::new("gnome-screenshot").arg("-f").arg(path).output().await;
                     if output.is_err() || !output.unwrap().status.success() {
                         result.push_str("Error: Failed to take screenshot.\n");
+                        warn!("[COMP_VISION] Failed to capture screenshot using scrot/gnome-screenshot.");
                         continue;
                     }
                 }
 
                 if line == "screenshot_annotated" {
                     if let Ok(mut img) = image::open(path) {
+                        debug!("[COMP_VISION] Drawing grid overlay...");
                         self.draw_grid(&mut img).ok();
                         img.save(path).ok();
                     }
                 }
 
                 result.push_str(&format!("SCREENSHOT_SAVED: {}\n", path));
+                info!("[COMP_VISION] Screenshot saved to {}", path);
                 continue;
             }
 
             if line.starts_with("click_label ") {
                 let label = &line[12..];
+                debug!("[COMP_ACTION] Click by label: {}", label);
                 // Need dimensions
                 let output = Command::new("xdotool").arg("getdisplaygeometry").output().await
                     .map_err(|e| AppError::ExecutionError(format!("xdotool error: {}", e)))?;
@@ -128,10 +137,12 @@ impl ExecutionEngine for ComputerExecutor {
                     let w: u32 = parts[0].parse().unwrap_or(1920);
                     let h: u32 = parts[1].parse().unwrap_or(1080);
                     if let Some((x, y)) = self.get_label_coordinates(label, w, h) {
+                        trace!("[COMP_COORD] Label {} mapped to {}x{}", label, x, y);
                         Command::new("xdotool").arg("mousemove").arg(x.to_string()).arg(y.to_string()).arg("click").arg("1").status().await.ok();
                         result.push_str(&format!("Clicked grid cell {}\n", label));
                     } else {
                         result.push_str(&format!("Error: Invalid label {}\n", label));
+                        warn!("[COMP_ACTION] Invalid grid label: {}", label);
                     }
                 }
                 continue;
@@ -139,6 +150,7 @@ impl ExecutionEngine for ComputerExecutor {
 
             if line.starts_with("type ") {
                 let text = &line[5..];
+                debug!("[COMP_ACTION] Type text: {}", text);
                 Command::new("xdotool").arg("type").arg(text).status().await.ok();
                 result.push_str(&format!("Typed: {}\n", text));
                 continue;
@@ -146,6 +158,7 @@ impl ExecutionEngine for ComputerExecutor {
 
             if line.starts_with("key ") {
                 let key = &line[4..];
+                debug!("[COMP_ACTION] Press key: {}", key);
                 Command::new("xdotool").arg("key").arg(key).status().await.ok();
                 result.push_str(&format!("Pressed key: {}\n", key));
                 continue;
@@ -160,8 +173,10 @@ impl ExecutionEngine for ComputerExecutor {
 
             if !output.status.success() {
                 result.push_str(&format!("Error executing '{}': {}\n", line, String::from_utf8_lossy(&output.stderr)));
+                warn!("[COMP_EXEC_FAIL] Command '{}' failed: {}", line, String::from_utf8_lossy(&output.stderr));
             } else {
                 result.push_str(&format!("Executed: {}\n", line));
+                trace!("[COMP_EXEC_SUCCESS] Command '{}' output: {}", line, String::from_utf8_lossy(&output.stdout));
             }
         }
 

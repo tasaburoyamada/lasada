@@ -16,6 +16,8 @@ impl PythonExecutor {
     }
 }
 
+use log::{debug, trace, warn};
+
 #[async_trait]
 impl ExecutionEngine for PythonExecutor {
     async fn start_session(&mut self) -> Result<()> {
@@ -28,12 +30,15 @@ impl ExecutionEngine for PythonExecutor {
             .spawn()
             .map_err(|e| AppError::ExecutionError(format!("Failed to spawn python3: {}", e)))?;
 
+        let pid = child.id().unwrap_or(0);
+        debug!("[PY_INIT] Spawned python3 process with PID: {}", pid);
         self.child = Some(child);
         Ok(())
     }
 
     async fn execute(&mut self, code: &str, _language: &str) -> Result<String> {
         let child = self.child.as_mut().ok_or(AppError::ExecutionError("Session not started".into()))?;
+        let pid = child.id().unwrap_or(0);
         let stdin = child.stdin.as_mut().ok_or(AppError::ExecutionError("Failed to open stdin".into()))?;
         
         let id = std::process::id();
@@ -42,6 +47,8 @@ impl ExecutionEngine for PythonExecutor {
             .unwrap_or_default()
             .as_micros();
         let delimiter = format!("__LASADA_PY_END_{}_{}__", id, timestamp);
+        
+        trace!("[PY_EXEC] PID: {} | Payload: {}", pid, code.trim());
         
         // Wrap code to print delimiter and status after execution
         let full_command = format!(
@@ -68,8 +75,10 @@ impl ExecutionEngine for PythonExecutor {
                     match line {
                         Ok(Some(l)) => {
                             if l.starts_with(&delimiter) {
+                                debug!("[PY_DONE] PID: {}", pid);
                                 break;
                             }
+                            trace!("[PY_STDOUT] {}", l);
                             // Visual feedback
                             println!("{}", l);
                             io::stdout().flush().ok();
@@ -81,6 +90,7 @@ impl ExecutionEngine for PythonExecutor {
                     }
                 }
                 _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    warn!("[PY_TIMEOUT] PID: {}", pid);
                     return Err(AppError::Timeout);
                 }
             }

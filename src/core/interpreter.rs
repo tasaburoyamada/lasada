@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use std::io::{self, Write};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, debug, warn};
+use log::{info, debug, warn, trace};
 use tiktoken_rs::cl100k_base;
 use dialoguer::{Confirm, theme::ColorfulTheme};
 use std::fs;
@@ -83,12 +83,16 @@ impl Interpreter {
         executor.start_session().await?;
         
         match VectorDB::new() {
-            Ok(db) => self.vector_db = Some(db),
-            Err(e) => warn!("Failed to initialize VectorDB: {}. Long-term memory disabled.", e),
+            Ok(db) => {
+                self.vector_db = Some(db);
+                debug!("[STATE_INIT] VectorDB initialized successfully.");
+            },
+            Err(e) => warn!("[STATE_INIT] Failed to initialize VectorDB: {}. Long-term memory disabled.", e),
         }
         
         if self.history.is_empty() {
             let sys_info = self.get_system_info();
+            debug!("[STATE_INIT] System info collected: {}", sys_info.replace("\n", " | "));
             let mut content = self.system_prompt.clone();
             // Inject symbolic system state
             content.push_str("\n\n@CTX:[DOM:SYSTEM_ROOT|GOAL:INITIALIZED]\n");
@@ -103,6 +107,7 @@ impl Interpreter {
                 content,
                 image_base64: None,
             });
+            debug!("[STATE_INIT] Initial system prompt pushed.");
         }
         
         Ok(())
@@ -129,18 +134,22 @@ impl Interpreter {
     }
 
     pub async fn chat(&mut self, user_input: &str) -> Result<()> {
+        debug!("[CHAT_START] User input received: {}", user_input);
         let mut processed_input = self.analyze_files(user_input).await;
         
         // Long-term memory retrieval
         if let Some(db) = &self.vector_db {
             if let Ok(related) = db.search(user_input, 3) {
                 if !related.is_empty() {
-                    debug!("RAG: Found {} related items", related.len());
+                    debug!("[RAG_SEARCH] Found {} related items", related.len());
                     processed_input.push_str("\n\n@RAG_CONTEXT:[");
-                    for entry in related {
+                    for (i, entry) in related.iter().enumerate() {
+                        debug!("[RAG_RESULT] #{} Source: {}", i+1, entry.metadata.get("path").unwrap_or(&"summary".to_string()));
                         processed_input.push_str(&format!("[[{}]] ", entry.text.chars().take(200).collect::<String>().replace("\n", " ")));
                     }
                     processed_input.push_str("]\n");
+                } else {
+                    debug!("[RAG_SEARCH] No highly relevant items found.");
                 }
             }
         }
@@ -151,7 +160,8 @@ impl Interpreter {
             image_base64: None,
         });
 
-        for _ in 0..10 {
+        for turn_idx in 0..10 {
+            debug!("[CHAT_TURN] Starting turn #{}", turn_idx + 1);
             self.manage_context().await?;
             self.save_session().await?;
 
@@ -191,21 +201,26 @@ impl Interpreter {
 
             let code_blocks = self.extract_code_blocks(&full_response);
             if code_blocks.is_empty() {
+                debug!("[CHAT_TURN] No code blocks in AI response. Ending loop.");
                 break;
             }
             
             for (lang, code) in code_blocks {
+                debug!("[EXEC_EXTRACT] Language: {}, Code length: {} chars", lang, code.len());
                 println!("{}", "──────────────────────────────────────────────────".bright_black());
                 println!("{} {} ({})", "🚀 Proposed Command:".yellow().bold(), code.blue(), lang.magenta());
                 
                 let should_run = if self.auto_run {
+                    debug!("[EXEC_AUTH] Auto-run enabled. Executing...");
                     true
                 } else {
-                    Confirm::with_theme(&ColorfulTheme::default())
+                    let confirm = Confirm::with_theme(&ColorfulTheme::default())
                         .with_prompt("Do you want to execute this command?")
                         .default(false)
                         .interact()
-                        .unwrap_or(false)
+                        .unwrap_or(false);
+                    debug!("[EXEC_AUTH] User confirmation: {}", confirm);
+                    confirm
                 };
 
                 if should_run {
@@ -215,10 +230,13 @@ impl Interpreter {
                     pb_exec.set_style(ProgressStyle::default_spinner().template("{spinner:.yellow} Running...").unwrap());
                     pb_exec.enable_steady_tick(std::time::Duration::from_millis(80));
 
+                    use std::time::Instant;
+                    let start_exec = Instant::now();
                     let result = {
                         let mut executor = self.executor.lock().await;
                         executor.execute(&code, &lang).await?
                     };
+                    debug!("[EXEC_DONE] Completed in {}ms", start_exec.elapsed().as_millis());
 
                     pb_exec.finish_and_clear();
                     println!("{} \n{}", "✅ Result:".cyan().bold(), result);
@@ -235,6 +253,7 @@ impl Interpreter {
                                 use base64::{Engine as _, engine::general_purpose};
                                 image_base64 = Some(general_purpose::STANDARD.encode(bytes));
                                 display_result = format!("(Screenshot captured and attached: {})", path);
+                                debug!("[EXEC_VISION] Screenshot encoded and attached.");
                             }
                         }
                     }
@@ -246,6 +265,7 @@ impl Interpreter {
                         if (lang == "python" || lang == "python3") && (result.contains("ModuleNotFoundError") || result.contains("ImportError")) {
                             feedback.push_str("\n\n![[MODULE_NOT_FOUND_DETECTED]] Please generate a bash command to run `pip install <package_name>` and try again.");
                         }
+                        debug!("[EXEC_FAIL] Error feedback added to context.");
                     }
 
                     self.history.push(Message {
@@ -310,15 +330,17 @@ impl Interpreter {
         let bpe = cl100k_base().unwrap();
         let mut current_tokens = 0;
         
-        // Count tokens
-        for msg in &self.history {
-            current_tokens += bpe.encode_with_special_tokens(&msg.content).len();
+        // Count tokens and log per message in TRACE
+        for (i, msg) in self.history.iter().enumerate() {
+            let t = bpe.encode_with_special_tokens(&msg.content).len();
+            trace!("[CTX_TOKEN] Msg #{} | Role: {} | Tokens: {}", i, msg.role, t);
+            current_tokens += t;
         }
 
-        debug!("Current context tokens: {}", current_tokens);
+        debug!("[CTX_STATUS] Total messages: {}, Total tokens: {}/{}", self.history.len(), current_tokens, self.max_tokens);
 
         if current_tokens > self.max_tokens {
-            info!("Context window exceeded ({} tokens). Summarizing history...", current_tokens);
+            info!("[CTX_LIMIT] Window exceeded ({} tokens). Summarizing...", current_tokens);
             // Keep system prompt (index 0) and the last 5 messages as a simple heuristic
             if self.history.len() > 6 {
                 let system_msg = self.history.remove(0);
@@ -326,15 +348,21 @@ impl Interpreter {
                 let remove_index = self.history.len() - keep_count;
                 
                 let to_summarize: Vec<Message> = self.history.drain(0..remove_index).collect();
+                let old_count = to_summarize.len();
                 
                 println!("{}", "⏳ Summarizing old context...".yellow().dimmed());
+                let start_sum = std::time::Instant::now();
                 let summary = self.generate_internal_summary(&to_summarize).await?;
+                let sum_tokens = bpe.encode_with_special_tokens(&summary).len();
+                
+                debug!("[CTX_SUM] Summarized {} messages in {}ms. Summary size: {} tokens.", old_count, start_sum.elapsed().as_millis(), sum_tokens);
                 
                 // Save to long-term memory
                 if let Some(db) = &mut self.vector_db {
                     let mut meta = HashMap::new();
                     meta.insert("type".to_string(), "summary".to_string());
                     db.add(&summary, meta).ok();
+                    debug!("[CTX_RAG] Summary indexed in VectorDB.");
                 }
 
                 self.history.insert(0, Message {
@@ -343,7 +371,7 @@ impl Interpreter {
                     image_base64: None,
                 });
                 self.history.insert(0, system_msg);
-                debug!("Summarized history. New length: {}", self.history.len());
+                debug!("[CTX_DONE] History truncated. New token count estimate: ~{}", sum_tokens);
             }
         }
         Ok(())
@@ -389,6 +417,7 @@ impl Interpreter {
             if let Some(ext) = path_buf.extension().and_then(|e| e.to_str()) {
                 let ext_lower = ext.to_lowercase();
                 if ext_lower == "pdf" {
+                    debug!("[FILE_INJECT] Processing PDF: {}", path);
                     // ... (pdf logic)
                     match tokio::process::Command::new("pdftotext")
                         .arg(path)
@@ -399,15 +428,16 @@ impl Interpreter {
                         Ok(output) if output.status.success() => {
                             let content = String::from_utf8_lossy(&output.stdout).to_string();
                             file_contents.push_str(&format!("\n\n--- Content of PDF {} ---\n{}\n---\n", path, content));
-                            info!("Injected PDF file: {}", path);
+                            info!("[FILE_INJECT] Successfully injected PDF: {}", path);
                             content_to_index = content;
                         }
                         _ => {
-                            warn!("Failed to extract text from PDF: {}", path);
+                            warn!("[FILE_INJECT] Failed to extract text from PDF: {}", path);
                             file_contents.push_str(&format!("\n\n(Error: Failed to extract text from PDF {}. Make sure 'poppler-utils' is installed.)\n", path));
                         }
                     }
                 } else if ext_lower == "ipynb" {
+                    debug!("[FILE_INJECT] Processing Jupyter Notebook: {}", path);
                     // Jupyter Notebook support
                     match fs::read_to_string(path) {
                         Ok(content) => {
@@ -431,24 +461,24 @@ impl Interpreter {
                                         }
                                     }
                                     file_contents.push_str(&format!("\n\n--- Content of Jupyter Notebook {} ---\n{}\n---\n", path, notebook_text));
-                                    info!("Injected Jupyter Notebook: {}", path);
+                                    info!("[FILE_INJECT] Successfully injected IPYNB: {}", path);
                                     content_to_index = notebook_text;
                                 }
                             }
                         }
                         Err(e) => {
-                            warn!("Failed to read ipynb {}: {}", path, e);
+                            warn!("[FILE_INJECT] Failed to read ipynb {}: {}", path, e);
                         }
                     }
                 } else {
                     match fs::read_to_string(path) {
                         Ok(content) => {
                             file_contents.push_str(&format!("\n\n--- Content of {} ---\n{}\n---\n", path, content));
-                            info!("Injected file: {}", path);
+                            info!("[FILE_INJECT] Injected file: {}", path);
                             content_to_index = content;
                         }
                         Err(e) => {
-                            warn!("Failed to read file {}: {}", path, e);
+                            warn!("[FILE_INJECT] Failed to read file {}: {}", path, e);
                             file_contents.push_str(&format!("\n\n(Error reading file {}: {})\n", path, e));
                         }
                     }
@@ -458,11 +488,11 @@ impl Interpreter {
                 match fs::read_to_string(path) {
                     Ok(content) => {
                         file_contents.push_str(&format!("\n\n--- Content of {} ---\n{}\n---\n", path, content));
-                        info!("Injected file: {}", path);
+                        info!("[FILE_INJECT] Injected file (no ext): {}", path);
                         content_to_index = content;
                     }
                     Err(e) => {
-                        warn!("Failed to read file {}: {}", path, e);
+                        warn!("[FILE_INJECT] Failed to read file {}: {}", path, e);
                         file_contents.push_str(&format!("\n\n(Error reading file {}: {})\n", path, e));
                     }
                 }
@@ -474,15 +504,19 @@ impl Interpreter {
                     let mut meta = HashMap::new();
                     meta.insert("path".to_string(), path.to_string());
                     
+                    let mut chunk_count = 0;
                     // Simple chunking by 1000 characters
                     for chunk in content_to_index.chars().collect::<Vec<_>>().chunks(1000) {
                         let chunk_str: String = chunk.iter().collect();
                         db.add(&chunk_str, meta.clone()).ok();
+                        chunk_count += 1;
                     }
+                    debug!("[FILE_INDEX] Indexed {} in {} chunks.", path, chunk_count);
                 }
             }
         }
         
+        trace!("[FILE_TOTAL] Injected context size: {} bytes", file_contents.len());
         format!("{}{}", result, file_contents)
     }
 }

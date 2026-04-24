@@ -1,7 +1,7 @@
 use crate::core::traits::{ExecutionEngine, AppError, Result};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
-use log::{info, warn};
+use log::{info, debug, trace, warn};
 
 pub struct WebExecutor;
 
@@ -11,7 +11,7 @@ impl WebExecutor {
     }
 
     async fn search(&self, query: &str) -> Result<String> {
-        info!("Searching web for: {}", query);
+        info!("[WEB_SEARCH] Query: {}", query);
         let client = reqwest::Client::new();
         // Using DuckDuckGo HTML version for simpler scraping
         let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding::encode(query));
@@ -33,6 +33,7 @@ impl WebExecutor {
         let mut results = String::new();
         results.push_str(&format!("Search results for: {}\n\n", query));
 
+        let mut count = 0;
         for (i, element) in document.select(&selector).take(5).enumerate() {
             let title = element.select(&title_selector).next()
                 .map(|e| e.text().collect::<String>())
@@ -44,11 +45,14 @@ impl WebExecutor {
                 .map(|e| e.text().collect::<String>())
                 .unwrap_or_default();
 
+            trace!("[WEB_RESULT] #{} Title: {}", i+1, title.trim());
             results.push_str(&format!("{}. {}\n   URL: {}\n   Snippet: {}\n\n", i + 1, title.trim(), link, snippet.trim()));
+            count += 1;
         }
+        debug!("[WEB_SEARCH] Found {} results for '{}'", count, query);
 
         if results.len() < 50 {
-            warn!("Search results seem empty or blocked.");
+            warn!("[WEB_SEARCH] Search results seem empty or blocked.");
             results.push_str("(No results found or access blocked by provider.)");
         }
 
@@ -56,7 +60,7 @@ impl WebExecutor {
     }
 
     async fn browse(&self, url: &str) -> Result<String> {
-        info!("Browsing URL: {}", url);
+        info!("[WEB_BROWSE] URL: {}", url);
         let client = reqwest::Client::new();
         let res = client.get(url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
@@ -83,6 +87,7 @@ impl WebExecutor {
                 }
             }
         }
+        debug!("[WEB_BROWSE] Extracted {} chars from {}", text_content.len(), url);
 
         // Limit size
         if text_content.len() > 5000 {
