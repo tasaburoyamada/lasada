@@ -19,18 +19,49 @@ pub enum AppError {
 pub type Result<T> = std::result::Result<T, AppError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 pub type LlmStream = Pin<Box<dyn Stream<Item = Result<String>> + Send>>;
 
+// ストリーミング中にツールコールが発生した場合の情報を保持する構造体
+#[derive(Debug, Clone)]
+pub enum LlmResponseChunk {
+    Text(String),
+    ToolCall(ToolCall),
+}
+
+pub type LlmResponseStream = Pin<Box<dyn Stream<Item = Result<LlmResponseChunk>> + Send>>;
+
 #[async_trait]
 pub trait LlmBackend: Send + Sync {
-    async fn stream_chat_completion(&self, history: Vec<Message>) -> Result<LlmStream>;
+    async fn stream_chat_completion(
+        &self, 
+        history: Vec<Message>, 
+        tools: Option<Vec<ToolDefinition>>
+    ) -> Result<LlmResponseStream>;
 }
 
 #[async_trait]

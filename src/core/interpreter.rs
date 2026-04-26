@@ -1,4 +1,4 @@
-use crate::core::traits::{ExecutionEngine, LlmBackend, Message, Result};
+use crate::core::traits::{ExecutionEngine, LlmBackend, Message, Result, ToolDefinition, ToolCall, LlmResponseChunk};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use futures_util::StreamExt;
@@ -10,6 +10,7 @@ use tiktoken_rs::cl100k_base;
 use dialoguer::{Confirm, theme::ColorfulTheme};
 use std::fs;
 use std::path::PathBuf;
+use serde_json::json;
 
 use crate::core::vector_db::VectorDB;
 use std::collections::HashMap;
@@ -106,6 +107,8 @@ impl Interpreter {
                 role: "system".to_string(),
                 content,
                 image_base64: None,
+                tool_calls: None,
+                tool_call_id: None,
             });
             debug!("[STATE_INIT] Initial system prompt pushed.");
         }
@@ -133,6 +136,44 @@ impl Interpreter {
         )
     }
 
+    fn get_tools(&self) -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: "execute_bash".to_string(),
+                description: "Execute a bash command on the host system.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "The bash command to execute." }
+                    },
+                    "required": ["command"]
+                }),
+            },
+            ToolDefinition {
+                name: "execute_python".to_string(),
+                description: "Execute Python code in an interactive session.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "code": { "type": "string", "description": "The Python code to execute." }
+                    },
+                    "required": ["code"]
+                }),
+            },
+            ToolDefinition {
+                name: "web_search".to_string(),
+                description: "Search the web for information.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "The search query." }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        ]
+    }
+
     pub async fn chat(&mut self, user_input: &str) -> Result<()> {
         debug!("[CHAT_START] User input received: {}", user_input);
         let mut processed_input = self.analyze_files(user_input).await;
@@ -141,15 +182,11 @@ impl Interpreter {
         if let Some(db) = &self.vector_db {
             if let Ok(related) = db.search(user_input, 3) {
                 if !related.is_empty() {
-                    debug!("[RAG_SEARCH] Found {} related items", related.len());
                     processed_input.push_str("\n\n@RAG_CONTEXT:[");
-                    for (i, entry) in related.iter().enumerate() {
-                        debug!("[RAG_RESULT] #{} Source: {}", i+1, entry.metadata.get("path").unwrap_or(&"summary".to_string()));
+                    for entry in related {
                         processed_input.push_str(&format!("[[{}]] ", entry.text.chars().take(200).collect::<String>().replace("\n", " ")));
                     }
                     processed_input.push_str("]\n");
-                } else {
-                    debug!("[RAG_SEARCH] No highly relevant items found.");
                 }
             }
         }
@@ -158,7 +195,11 @@ impl Interpreter {
             role: "user".to_string(),
             content: processed_input,
             image_base64: None,
+            tool_calls: None,
+            tool_call_id: None,
         });
+
+        let tools = self.get_tools();
 
         for turn_idx in 0..10 {
             debug!("[CHAT_TURN] Starting turn #{}", turn_idx + 1);
@@ -166,121 +207,105 @@ impl Interpreter {
             self.save_session().await?;
 
             let pb = ProgressBar::new_spinner();
-            pb.set_style(ProgressStyle::default_spinner()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-                .template("{spinner:.green} Thinking...")
-                .unwrap());
+            pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} Thinking...").unwrap());
             pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
-            let mut stream = self.llm.stream_chat_completion(self.history.clone()).await?;
+            let mut stream = self.llm.stream_chat_completion(self.history.clone(), Some(tools.clone())).await?;
             pb.finish_and_clear();
 
             let mut full_response = String::new();
+            let mut pending_tool_calls: HashMap<usize, ToolCall> = HashMap::new();
+
             print!("{}", "AI > ".green().bold());
             io::stdout().flush().unwrap();
 
             while let Some(chunk) = stream.next().await {
-                let text = chunk?;
-                print!("{}", text.green());
-                io::stdout().flush().unwrap();
-                full_response.push_str(&text);
+                match chunk? {
+                    LlmResponseChunk::Text(text) => {
+                        print!("{}", text.green());
+                        io::stdout().flush().unwrap();
+                        full_response.push_str(&text);
+                    }
+                    LlmResponseChunk::ToolCall(call) => {
+                        // ストリーミング中は各インデックスの最新状態を保持するだけ
+                        // IDがある場合は新しいコール
+                        if !call.id.is_empty() {
+                            pending_tool_calls.insert(pending_tool_calls.len(), call);
+                        } else {
+                            // 引数の追記などは LlmBackend 側で既に行われている想定
+                            if let Some(existing) = pending_tool_calls.values_mut().last() {
+                                existing.arguments = call.arguments;
+                                existing.name = call.name;
+                            }
+                        }
+                    }
+                }
             }
-            println!("\n"); // Clear the stream line
-            
-            // Render rich markdown
-            termimad::print_text(&full_response);
-            println!();
-            
-            info!("AI: {}", full_response);
+            println!("\n");
+
+            let tool_calls_to_exec: Vec<ToolCall> = pending_tool_calls.into_values().collect();
 
             self.history.push(Message {
                 role: "assistant".to_string(),
                 content: full_response.clone(),
                 image_base64: None,
+                tool_calls: if tool_calls_to_exec.is_empty() { None } else { Some(tool_calls_to_exec.clone()) },
+                tool_call_id: None,
             });
 
-            let code_blocks = self.extract_code_blocks(&full_response);
-            if code_blocks.is_empty() {
-                debug!("[CHAT_TURN] No code blocks in AI response. Ending loop.");
+            if tool_calls_to_exec.is_empty() {
                 break;
             }
             
-            for (lang, code) in code_blocks {
-                debug!("[EXEC_EXTRACT] Language: {}, Code length: {} chars", lang, code.len());
+            for call in tool_calls_to_exec {
                 println!("{}", "──────────────────────────────────────────────────".bright_black());
-                println!("{} {} ({})", "🚀 Proposed Command:".yellow().bold(), code.blue(), lang.magenta());
+                println!("{} {}({})", "🚀 Tool Call:".yellow().bold(), call.name.blue(), call.arguments.magenta());
                 
-                let should_run = if self.auto_run {
-                    debug!("[EXEC_AUTH] Auto-run enabled. Executing...");
-                    true
-                } else {
-                    let confirm = Confirm::with_theme(&ColorfulTheme::default())
-                        .with_prompt("Do you want to execute this command?")
+                let should_run = if self.auto_run { true } else {
+                    Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Execute this tool?")
                         .default(false)
                         .interact()
-                        .unwrap_or(false);
-                    debug!("[EXEC_AUTH] User confirmation: {}", confirm);
-                    confirm
+                        .unwrap_or(false)
                 };
 
                 if should_run {
-                    info!("Executing ({}): {}", lang, code);
-                    
                     let pb_exec = ProgressBar::new_spinner();
-                    pb_exec.set_style(ProgressStyle::default_spinner().template("{spinner:.yellow} Running...").unwrap());
+                    pb_exec.set_style(ProgressStyle::default_spinner().template("{spinner:.yellow} Executing...").unwrap());
                     pb_exec.enable_steady_tick(std::time::Duration::from_millis(80));
 
-                    use std::time::Instant;
-                    let start_exec = Instant::now();
+                    // Parse arguments
+                    let args: serde_json::Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
+                    let (lang, code) = match call.name.as_str() {
+                        "execute_bash" => ("bash", args["command"].as_str().unwrap_or("")),
+                        "execute_python" => ("python", args["code"].as_str().unwrap_or("")),
+                        "web_search" => ("web", args["query"].as_str().unwrap_or("")),
+                        _ => ("unknown", ""),
+                    };
+
                     let result = {
                         let mut executor = self.executor.lock().await;
-                        executor.execute(&code, &lang).await?
+                        executor.execute(code, lang).await?
                     };
-                    debug!("[EXEC_DONE] Completed in {}ms", start_exec.elapsed().as_millis());
 
                     pb_exec.finish_and_clear();
                     println!("{} \n{}", "✅ Result:".cyan().bold(), result);
-                    info!("Result: {}", result);
-                    println!("{}", "──────────────────────────────────────────────────".bright_black());
-
-                    let mut image_base64 = None;
-                    let mut display_result = result.clone();
-
-                    if result.contains("SCREENSHOT_SAVED: ") {
-                        if let Some(path) = result.lines().find(|l| l.contains("SCREENSHOT_SAVED: ")) {
-                            let path = path.replace("SCREENSHOT_SAVED: ", "").trim().to_string();
-                            if let Ok(bytes) = fs::read(&path) {
-                                use base64::{Engine as _, engine::general_purpose};
-                                image_base64 = Some(general_purpose::STANDARD.encode(bytes));
-                                display_result = format!("(Screenshot captured and attached: {})", path);
-                                debug!("[EXEC_VISION] Screenshot encoded and attached.");
-                            }
-                        }
-                    }
-
-                    let mut feedback = format!("Execution Result ({}):\n{}", lang, display_result);
-                    if result.to_lowercase().contains("error") || result.to_lowercase().contains("failed") || result.contains("[Exit Code:") {
-                        feedback.push_str("\n\n(It seems the command failed or had an error. Please analyze the output and suggest a fix if necessary.)");
-
-                        if (lang == "python" || lang == "python3") && (result.contains("ModuleNotFoundError") || result.contains("ImportError")) {
-                            feedback.push_str("\n\n![[MODULE_NOT_FOUND_DETECTED]] Please generate a bash command to run `pip install <package_name>` and try again.");
-                        }
-                        debug!("[EXEC_FAIL] Error feedback added to context.");
-                    }
 
                     self.history.push(Message {
-                        role: "user".to_string(),
-                        content: feedback,
-                        image_base64,
+                        role: "tool".to_string(),
+                        content: result,
+                        image_base64: None,
+                        tool_calls: None,
+                        tool_call_id: Some(call.id),
                     });
                 } else {
-                    println!("{}", "⏭️  Skipped by user.".yellow());
                     self.history.push(Message {
-                        role: "user".to_string(),
-                        content: format!("Command ({}) was skipped by user. Please provide an alternative or explain why it was needed.", lang),
+                        role: "tool".to_string(),
+                        content: "Skipped by user.".to_string(),
                         image_base64: None,
+                        tool_calls: None,
+                        tool_call_id: Some(call.id),
                     });
-                    break;
                 }
             }
         }
@@ -291,232 +316,69 @@ impl Interpreter {
     pub async fn export_markdown(&self, path: &str) -> Result<()> {
         let mut markdown = String::new();
         markdown.push_str("# Lasada Session Report\n\n");
-        
         for msg in &self.history {
             match msg.role.as_str() {
-                "user" => {
-                    markdown.push_str("## 👤 User\n\n");
-                    markdown.push_str(&msg.content);
-                    markdown.push_str("\n\n");
-                }
-                "assistant" => {
-                    markdown.push_str("## 🤖 AI\n\n");
-                    markdown.push_str(&msg.content);
-                    markdown.push_str("\n\n");
-                }
-                _ => {} // Skip internal system/vlog/rag messages
+                "user" => markdown.push_str(&format!("## 👤 User\n\n{}\n\n", msg.content)),
+                "assistant" => markdown.push_str(&format!("## 🤖 AI\n\n{}\n\n", msg.content)),
+                "tool" => markdown.push_str(&format!("### 🛠 Tool Result\n\n```\n{}\n```\n\n", msg.content)),
+                _ => {}
             }
         }
-
-        fs::write(path, markdown)
-            .map_err(|e| crate::core::traits::AppError::ExecutionError(format!("Failed to export Markdown: {}", e)))?;
-        
+        fs::write(path, markdown).map_err(|e| crate::core::traits::AppError::ExecutionError(e.to_string()))?;
         Ok(())
-    }
-
-    fn extract_code_blocks(&self, text: &str) -> Vec<(String, String)> {
-        let mut blocks = Vec::new();
-        // Regex to match any code block with a language tag
-        let re = regex::Regex::new(r"```([a-zA-Z0-9]*)\s*[\r\n]+([\s\S]*?)```").unwrap();
-        for cap in re.captures_iter(text) {
-            let lang = cap[1].to_lowercase();
-            let code = cap[2].trim().to_string();
-            blocks.push((lang, code));
-        }
-        blocks
     }
 
     async fn manage_context(&mut self) -> Result<()> {
         let bpe = cl100k_base().unwrap();
         let mut current_tokens = 0;
-        
-        // Count tokens and log per message in TRACE
-        for (i, msg) in self.history.iter().enumerate() {
-            let t = bpe.encode_with_special_tokens(&msg.content).len();
-            trace!("[CTX_TOKEN] Msg #{} | Role: {} | Tokens: {}", i, msg.role, t);
-            current_tokens += t;
+        for msg in &self.history {
+            current_tokens += bpe.encode_with_special_tokens(&msg.content).len();
         }
 
-        debug!("[CTX_STATUS] Total messages: {}, Total tokens: {}/{}", self.history.len(), current_tokens, self.max_tokens);
-
         if current_tokens > self.max_tokens {
-            info!("[CTX_LIMIT] Window exceeded ({} tokens). Summarizing...", current_tokens);
-            // Keep system prompt (index 0) and the last 5 messages as a simple heuristic
             if self.history.len() > 6 {
                 let system_msg = self.history.remove(0);
                 let keep_count = 5;
                 let remove_index = self.history.len() - keep_count;
-                
                 let to_summarize: Vec<Message> = self.history.drain(0..remove_index).collect();
-                let old_count = to_summarize.len();
                 
-                println!("{}", "⏳ Summarizing old context...".yellow().dimmed());
-                let start_sum = std::time::Instant::now();
                 let summary = self.generate_internal_summary(&to_summarize).await?;
-                let sum_tokens = bpe.encode_with_special_tokens(&summary).len();
-                
-                debug!("[CTX_SUM] Summarized {} messages in {}ms. Summary size: {} tokens.", old_count, start_sum.elapsed().as_millis(), sum_tokens);
-                
-                // Save to long-term memory
-                if let Some(db) = &mut self.vector_db {
-                    let mut meta = HashMap::new();
-                    meta.insert("type".to_string(), "summary".to_string());
-                    db.add(&summary, meta).ok();
-                    debug!("[CTX_RAG] Summary indexed in VectorDB.");
-                }
-
                 self.history.insert(0, Message {
                     role: "system".to_string(),
                     content: summary,
                     image_base64: None,
+                    tool_calls: None,
+                    tool_call_id: None,
                 });
                 self.history.insert(0, system_msg);
-                debug!("[CTX_DONE] History truncated. New token count estimate: ~{}", sum_tokens);
             }
         }
         Ok(())
     }
 
     async fn generate_internal_summary(&self, messages: &[Message]) -> Result<String> {
-        let mut summarization_history = Vec::new();
-        let messages_text = messages.iter()
-            .map(|m| format!("{}: {}", m.role, m.content))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        summarization_history.push(Message {
-            role: "system".to_string(),
-            content: "@CTX:[DOM:HV-CAD|SUB:ENCODER|GOAL:STATE_SERIALIZATION] ![[STRICT_VLOG_FORMAT]] ![[NO_EXPLANATION]] ![[MINIMAL_TOKEN]] @BIAS:{C:1.0, S:1.0, P:1.0}".to_string(),
-            image_base64: None,
-        });
-        summarization_history.push(Message {
-            role: "user".to_string(),
-            content: format!("@INPUT:\n\n{}", messages_text),
-            image_base64: None,
-        });
-
-        let mut stream = self.llm.stream_chat_completion(summarization_history).await?;
+        let messages_text = messages.iter().map(|m| format!("{}: {}", m.role, m.content)).collect::<Vec<_>>().join("\n");
+        let history = vec![
+            Message { role: "system".to_string(), content: "Summarize concisely.".to_string(), image_base64: None, tool_calls: None, tool_call_id: None },
+            Message { role: "user".to_string(), content: messages_text, image_base64: None, tool_calls: None, tool_call_id: None }
+        ];
+        let mut stream = self.llm.stream_chat_completion(history, None).await?;
         let mut summary = String::new();
         while let Some(chunk) = stream.next().await {
-            summary.push_str(&chunk?);
+            if let LlmResponseChunk::Text(t) = chunk? { summary.push_str(&t); }
         }
         Ok(summary.trim().to_string())
     }
 
     async fn analyze_files(&mut self, text: &str) -> String {
-        let result = text.to_string();
-        // Regex to find @path/to/file
         let re = regex::Regex::new(r"@([^\s]+)").unwrap();
-        
         let mut file_contents = String::new();
         for cap in re.captures_iter(text) {
             let path = &cap[1];
-            let path_buf = PathBuf::from(path);
-            let mut content_to_index = String::new();
-
-            if let Some(ext) = path_buf.extension().and_then(|e| e.to_str()) {
-                let ext_lower = ext.to_lowercase();
-                if ext_lower == "pdf" {
-                    debug!("[FILE_INJECT] Processing PDF: {}", path);
-                    // ... (pdf logic)
-                    match tokio::process::Command::new("pdftotext")
-                        .arg(path)
-                        .arg("-")
-                        .output()
-                        .await 
-                    {
-                        Ok(output) if output.status.success() => {
-                            let content = String::from_utf8_lossy(&output.stdout).to_string();
-                            file_contents.push_str(&format!("\n\n--- Content of PDF {} ---\n{}\n---\n", path, content));
-                            info!("[FILE_INJECT] Successfully injected PDF: {}", path);
-                            content_to_index = content;
-                        }
-                        _ => {
-                            warn!("[FILE_INJECT] Failed to extract text from PDF: {}", path);
-                            file_contents.push_str(&format!("\n\n(Error: Failed to extract text from PDF {}. Make sure 'poppler-utils' is installed.)\n", path));
-                        }
-                    }
-                } else if ext_lower == "ipynb" {
-                    debug!("[FILE_INJECT] Processing Jupyter Notebook: {}", path);
-                    // Jupyter Notebook support
-                    match fs::read_to_string(path) {
-                        Ok(content) => {
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                                let mut notebook_text = String::new();
-                                if let Some(cells) = json.get("cells").and_then(|c| c.as_array()) {
-                                    for cell in cells {
-                                        let cell_type = cell.get("cell_type").and_then(|t| t.as_str()).unwrap_or("");
-                                        let source = cell.get("source").and_then(|s| {
-                                            if s.is_array() {
-                                                Some(s.as_array().unwrap().iter().map(|line| line.as_str().unwrap_or("")).collect::<String>())
-                                            } else {
-                                                s.as_str().map(|s| s.to_string())
-                                            }
-                                        }).unwrap_or_default();
-
-                                        if cell_type == "code" {
-                                            notebook_text.push_str(&format!("\n# In [ ]:\n{}\n", source));
-                                        } else if cell_type == "markdown" {
-                                            notebook_text.push_str(&format!("\n'''\n{}\n'''\n", source));
-                                        }
-                                    }
-                                    file_contents.push_str(&format!("\n\n--- Content of Jupyter Notebook {} ---\n{}\n---\n", path, notebook_text));
-                                    info!("[FILE_INJECT] Successfully injected IPYNB: {}", path);
-                                    content_to_index = notebook_text;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("[FILE_INJECT] Failed to read ipynb {}: {}", path, e);
-                        }
-                    }
-                } else {
-                    match fs::read_to_string(path) {
-                        Ok(content) => {
-                            file_contents.push_str(&format!("\n\n--- Content of {} ---\n{}\n---\n", path, content));
-                            info!("[FILE_INJECT] Injected file: {}", path);
-                            content_to_index = content;
-                        }
-                        Err(e) => {
-                            warn!("[FILE_INJECT] Failed to read file {}: {}", path, e);
-                            file_contents.push_str(&format!("\n\n(Error reading file {}: {})\n", path, e));
-                        }
-                    }
-                }
-            } else {
-                // No extension, treat as text
-                match fs::read_to_string(path) {
-                    Ok(content) => {
-                        file_contents.push_str(&format!("\n\n--- Content of {} ---\n{}\n---\n", path, content));
-                        info!("[FILE_INJECT] Injected file (no ext): {}", path);
-                        content_to_index = content;
-                    }
-                    Err(e) => {
-                        warn!("[FILE_INJECT] Failed to read file {}: {}", path, e);
-                        file_contents.push_str(&format!("\n\n(Error reading file {}: {})\n", path, e));
-                    }
-                }
-            }
-
-            // Index content in chunks
-            if !content_to_index.is_empty() {
-                if let Some(db) = &mut self.vector_db {
-                    let mut meta = HashMap::new();
-                    meta.insert("path".to_string(), path.to_string());
-                    
-                    let mut chunk_count = 0;
-                    // Simple chunking by 1000 characters
-                    for chunk in content_to_index.chars().collect::<Vec<_>>().chunks(1000) {
-                        let chunk_str: String = chunk.iter().collect();
-                        db.add(&chunk_str, meta.clone()).ok();
-                        chunk_count += 1;
-                    }
-                    debug!("[FILE_INDEX] Indexed {} in {} chunks.", path, chunk_count);
-                }
+            if let Ok(content) = fs::read_to_string(path) {
+                file_contents.push_str(&format!("\n\n--- {} ---\n{}\n---\n", path, content));
             }
         }
-        
-        trace!("[FILE_TOTAL] Injected context size: {} bytes", file_contents.len());
-        format!("{}{}", result, file_contents)
+        format!("{}{}", text, file_contents)
     }
 }
